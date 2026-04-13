@@ -1,0 +1,86 @@
+import streamlit as st
+import librosa
+import numpy as np
+import matplotlib.pyplot as plt
+import io
+import pandas as pd
+
+# --- FORENSIC ENGINE ---
+class PneumaEngine:
+    @staticmethod
+    def analyze(audio_bytes, label="Sample"):
+        audio_file = io.BytesIO(audio_bytes)
+        y, sr = librosa.load(audio_file, sr=22050)
+        
+        rms = librosa.feature.rms(y=y)
+        zcr = librosa.feature.zero_crossing_rate(y=y)
+        
+        threshold = np.percentile(rms, 30) 
+        breath_frames = np.where((rms < threshold) & (zcr > np.mean(zcr)))
+        
+        events = []
+        if len(breath_frames) > 0:
+            diffs = np.diff(breath_frames)
+            splits = np.where(diffs > 10)
+            clusters = np.split(breath_frames, splits + 1)
+            events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 2]
+
+        ibi_cv = 0
+        if len(events) >= 2:
+            ibis = np.diff(events)
+            ibi_cv = np.std(ibis) / np.mean(ibis)
+        
+        if len(events) < 1:
+            prob, verdict = 99.0, "SYNTHETIC (No Respiration)"
+        elif ibi_cv < 0.07:
+            prob, verdict = 94.0, "SYNTHETIC (Machine-Regular)"
+        elif 0.15 <= ibi_cv <= 0.48:
+            prob, verdict = 12.0, "AUTHENTIC (Biological Rhythm)"
+        else:
+            prob, verdict = 50.0, "INCONCLUSIVE (High Noise)"
+            
+        return {"label": label, "y": y, "sr": sr, "events": events, "cv": ibi_cv, "prob": prob, "verdict": verdict, "count": len(events)}
+
+# --- INTERFACE ---
+st.set_page_config(page_title="PNEUMA Forensic Pro", layout="wide")
+st.title("🫁 PNEUMA Forensic Pro")
+
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.subheader("📁 Audio Input")
+    # Try the new mic widget, but fall back to upload if it fails
+    try:
+        audio_data = st.audio_input("Record Live Sample")
+    except:
+        audio_data = None
+        
+    uploaded_file = st.file_uploader("Or Upload .wav / .mp3", type=["wav", "mp3"])
+    
+    final_audio = audio_data if audio_data else uploaded_file
+    
+    if final_audio:
+        sample_label = st.text_input("Sample Label", value="Testing Sample")
+        if st.button("🔬 RUN ANALYSIS"):
+            res = PneumaEngine.analyze(final_audio.read(), sample_label)
+            st.session_state.history.append(res)
+
+if st.session_state.history:
+    latest = st.session_state.history[-1]
+    with col2:
+        st.subheader(f"Results: {latest['verdict']}")
+        st.metric("Synthetic Probability", f"{latest['prob']}%")
+        
+        fig, ax = plt.subplots(figsize=(10, 3))
+        times = np.linspace(0, len(latest['y'])/latest['sr'], len(latest['y']))
+        ax.plot(times, latest['y'], color='gray', alpha=0.4)
+        ax.vlines(latest['events'], -1, 1, color='red', linestyles='--', label="Breath")
+        st.pyplot(fig)
+
+    st.divider()
+    st.subheader("📊 Research Data Log")
+    df = pd.DataFrame([{"Sample": r["label"], "Verdict": r["verdict"], "CV": round(r["cv"], 4), "Prob": f"{r['prob']}%"} for r in st.session_state.history])
+    st.table(df)

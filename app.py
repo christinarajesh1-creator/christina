@@ -22,7 +22,8 @@ class PneumaEngine:
         if len(breath_frames) > 0:
             diffs = np.diff(breath_frames)
             splits = np.where(diffs > 10)
-            clusters = np.split(breath_frames, splits + 1)
+           clusters = np.split(breath_frames, np.array(splits) + 1)
+
             events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 2]
 
         ibi_cv = 0

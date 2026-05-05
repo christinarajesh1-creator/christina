@@ -60,7 +60,7 @@ with col1:
     except:
         audio_data = None
         
-               uploaded_files = st.file_uploader("Upload multiple WAVs", type=['wav'], accept_multiple_files=True) 
+             
                                  type=['wav'], accept_multiple_files=True)
 
 if uploaded_files:
@@ -94,10 +94,15 @@ if st.session_state.history:
         st.pyplot(fig)
 
     st.divider()
-    st.subheader("📊 Research Dataset")
-    df = pd.DataFrame([{"Sample": r["label"], "Verdict": r["verdict"], "CV": f"{r['cv']:.3f}", "Prob": f"{r['prob']}%", "Breaths": r['count']} for r in st.session_state.history])
-    st.dataframe(df)
-    
+    st.subheader("🐙 BATCH UPLOAD (Drag Multiple WAVs)")
+batch_files = st.file_uploader("Drop WAV files here", type='wav', accept_multiple_files=True)
+
+if batch_files:
+    st.info(f"Processing {len(batch_files)} files...")
+    for i, file in enumerate(batch_files):
+        label = file.name.replace('.wav', '')
+        res = PneumaEngine.analyze(file.read(), label)
+        st.session
     # CSV EXPORT
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("💾 Export Research Dataset", csv, "pneuma_results.csv", "text/csv")

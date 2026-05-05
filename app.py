@@ -18,30 +18,30 @@ class PneumaEngine:
         rms = librosa.feature.rms(y=y)
         zcr = librosa.feature.zero_crossing_rate(y=y)
         
-        threshold = np.percentile(rms, 10)  # More silence
-        breath_frames = np.where((rms < threshold) & (zcr < np.mean(zcr)*0.6))
+        threshold = np.percentile(rms, 5)  # MAX silence detection
+        breath_frames = np.where((rms < threshold) & (zcr < np.mean(zcr)*0.5))
         
         events = []
         if len(breath_frames[0]) > 0:
             diffs = np.diff(breath_frames[0])
-            splits = np.where(diffs > 3)[0]  # More sensitive
+            splits = np.where(diffs > 2)[0]  # Ultra sensitive
             clusters = np.split(breath_frames[0], splits + 1)
-            events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 1]
+            events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 0]  # Any cluster
 
         ibi_cv = 0
         if len(events) >= 2:
             ibis = np.diff(events)
-            ibi_cv = np.std(ibis) / np.mean(ibis)
+            ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
         
-        # RELAXED THRESHOLDS - HUMANS PASS
-        if len(events) < 2:
-            prob, verdict = 85.0, "LIKELY SYNTHETIC (Few Breaths)"
-        elif ibi_cv < 0.12:  # Was 0.07
-            prob, verdict = 75.0, "SYNTHETIC (Regular)"  # Was 94%
-        elif ibi_cv < 0.25:  # New human range
-            prob, verdict = 25.0, "LIKELY AUTHENTIC"
-        else:
-            prob, verdict = 10.0, "AUTHENTIC (Highly Variable)"
+        # ULTRA HUMAN-FRIENDLY THRESHOLDS
+        if len(events) == 0:
+            prob, verdict = 95.0, "SYNTHETIC (No Silence)"
+        elif len(events) == 1:
+            prob, verdict = 60.0, "UNCERTAIN (Single Breath)"
+        elif ibi_cv < 0.08:  # AI cutoff
+            prob, verdict = 85.0, "LIKELY SYNTHETIC"
+        else:  # ANY CV > 0.08 = HUMAN
+            prob, verdict = 15.0, "AUTHENTIC (Natural Variation)"
             
         return {"label": label, "y": y, "sr": sr, "events": events, "cv": ibi_cv, "prob": prob, "verdict": verdict, "count": len(events)}
 # --- PERFECT INTERFACE ---

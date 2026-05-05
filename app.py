@@ -61,7 +61,6 @@ with col1:
         audio_data = None
         
              
-                                 type=['wav'], accept_multiple_files=True)
 
 if uploaded_files:
     for file in uploaded_files[:30]:

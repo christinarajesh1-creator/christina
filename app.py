@@ -60,7 +60,7 @@ with col1:
     except:
         audio_data = None
         
-   uploaded_files = st.file_uploader("Upload multiple WAVs", 
+               uploaded_files 
                                  type=['wav'], accept_multiple_files=True)
 
 if uploaded_files:

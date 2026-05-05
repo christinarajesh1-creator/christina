@@ -69,43 +69,25 @@ with col1:
     audio_data = st.audio_input("Live recording")
     
     if audio_data is not None:
-        if st.button("🔍 Analyze"):
+        if st.button("🔍 Analyze Live", use_container_width=True):
             res = PneumaEngine.analyze(audio_data.getvalue(), "Live")
             st.session_state.history.append(res)
             st.rerun()
     
-    st.subheader("📁 Upload")
-    uploaded_file = st.file_uploader("Audio file", type=['wav', 'mp3', 'm4a'])
+    st.subheader("📁 Upload Audio")
+    uploaded_files = st.file_uploader(
+        "Drop WAV/MP3 files here", 
+        type=['wav', 'mp3', 'm4a'], 
+        accept_multiple_files=True
+    )
     
-    if uploaded_file is not None:
-        if st.button("🔍 Analyze"):
-            uploaded_file.seek(0)
-            res = PneumaEngine.analyze(uploaded_file.getvalue(), uploaded_file.name)
-            st.session_state.history.append(res)
-            st.rerun()
-    st.subheader("📁 UPLOAD FILES")
-    
-    # Single file upload
-    uploaded_file = st.file_uploader("Single file", type=['wav', 'mp3', 'm4a'])
-    
-    if uploaded_file is not None:
-        label = st.text_input("Label:", value=uploaded_file.name.replace('.wav',''))
-        if st.button("🔍 ANALYZE FILE", use_container_width=True):
-            uploaded_file.seek(0)
-            res = PneumaEngine.analyze(uploaded_file.getvalue(), label)
-            st.session_state.history.append(res)
-            st.rerun()
-    
-    # Batch upload
-    batch_files = st.file_uploader("Batch files", type=['wav', 'mp3'], accept_multiple_files=True)
-    
-    if batch_files is not None and len(batch_files) > 0:
-        for file in batch_files:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.write(file.name)
-            with col_b:
-                if st.button("Analyze", key=f"batch_{file.name}"):
+    if uploaded_files is not None and len(uploaded_files) > 0:
+        for file in uploaded_files:
+            col_file, col_btn = st.columns([3, 1])
+            with col_file:
+                st.write(f"**{file.name}**")
+            with col_btn:
+                if st.button("🔍", key=f"btn_{file.name}"):
                     file.seek(0)
                     res = PneumaEngine.analyze(file.getvalue(), file.name)
                     st.session_state.history.append(res)

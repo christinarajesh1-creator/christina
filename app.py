@@ -55,21 +55,34 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("📁 Audio Input")
+    
+    # SINGLE FILE
     try:
-        audio_data = st.audio_input("Record Live Sample")
+        audio_data = st.audio_input("1. Record Live")
     except:
         audio_data = None
-        
-   uploaded_files = st.file_uploader("Upload multiple WAVs", 
-                                 type=['wav'], accept_multiple_files=True)
-
-if uploaded_files:
-    for file in uploaded_files[:30]:
-        label = st.text_input(f"Label for {file.name}", value=file.name.replace('.wav',''))
-        if st.button(f"Analyze {file.name}"):
-            res = PneumaEngine.analyze(file.read(), label)
+    single_file = st.file_uploader("2. Single WAV", type="wav")
+    final_audio = audio_data if audio_data else single_file
+    
+    # BATCH UPLOAD
+    st.subheader("3. BATCH: Multiple WAVs")
+    batch_files = st.file_uploader("Drop 30 WAVs here", type='wav', accept_multiple_files=True)
+    
+    if final_audio:
+        sample_label = st.text_input("Label single file", value="test")
+        if st.button("🔬 Analyze Single"):
+            res = PneumaEngine.analyze(final_audio.read(), sample_label)
             st.session_state.history.append(res)
             st.rerun()
+    
+    if batch_files:
+        st.info(f"📊 Processing {len(batch_files)} files...")
+        for file in batch_files:
+            label = file.name.replace('.wav', '').replace('.WAV', '')
+            res = PneumaEngine.analyze(file.read(), label)
+            st.session_state.history.append(res)
+        st.success(f"✅ Batch complete! Total: {len(st.session_state.history)}")
+        st.rerun()
             
             # IMMEDIATE CSV SAVE
             df = pd.DataFrame(st.session_state.history)

@@ -71,9 +71,17 @@ with col1:
     
     if final_audio:
         sample_label = st.text_input("Sample Label", value="Testing Sample")
-        if st.button("🔬 RUN ANALYSIS"):
+        col1, col2 = st.columns(2)
+        if col1.button("🔬 ANALYZE & SAVE"):
             res = PneumaEngine.analyze(final_audio.read(), sample_label)
             st.session_state.history.append(res)
+            
+            # IMMEDIATE CSV SAVE
+            df = pd.DataFrame(st.session_state.history)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("💾 DOWNLOAD SAVED SAMPLES", csv, "pneuma_samples.csv")
+            
+            st.success(f"Added sample #{len(st.session_state.history)}")
             st.rerun()
 
 if st.session_state.history:

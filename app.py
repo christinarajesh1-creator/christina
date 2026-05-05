@@ -11,22 +11,23 @@ st.session_state.setdefault('history', [])
 # --- FORENSIC ENGINE ---
 class PneumaEngine:
     @staticmethod
-    def analyze(audio_bytes, label="Sample"):
-        audio_file = io.BytesIO(audio_bytes)
-        y, sr = librosa.load(audio_file, sr=22050)
-        
-        rms = librosa.feature.rms(y=y)
-        zcr = librosa.feature.zero_crossing_rate(y=y)
-        
-        threshold = np.percentile(rms, 30) 
-        breath_frames = np.where((rms < threshold) & (zcr > np.mean(zcr)))
-        
-        events = []
-        if len(breath_frames) > 0:
-            diffs = np.diff(breath_frames)
-            splits = np.where(diffs > 10)
-            clusters = np.split(breath_frames, splits[0] + 1)
-            events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 2]
+def analyze(audio_bytes, label="Sample"):
+    audio_file = io.BytesIO(audio_bytes)
+    y, sr = librosa.load(audio_file, sr=22050)
+    
+    rms = librosa.feature.rms(y=y)
+    zcr = librosa.feature.zero_crossing_rate(y=y)
+    
+    threshold = np.percentile(rms, 15)  # FIXED
+    breath_frames = np.where((rms < threshold) & (zcr < np.mean(zcr)*0.7))  # FIXED
+    
+    events = []
+    if len(breath_frames[0]) > 0:  # FIXED indexing
+        diffs = np.diff(breath_frames[0])
+        splits = np.where(diffs > 5)[0]
+        clusters = np.split(breath_frames[0], splits + 1)
+        events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 1]
+
 
         ibi_cv = 0
         if len(events) >= 2:

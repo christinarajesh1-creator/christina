@@ -99,7 +99,3 @@ if st.session_state.history:
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("💾 Export Research Dataset", csv, "pneuma_results.csv", "text/csv")
 
-st.caption("""
-*PneumaForensics v1.0 - First respiration-based deepfake detector*
-Based on Inter-Beat Interval CV (Levy WC, 2004)
-""")

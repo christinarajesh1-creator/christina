@@ -11,59 +11,57 @@ st.session_state.setdefault('history', [])
 # --- FORENSIC ENGINE ---
 class PneumaEngine:
     @staticmethod
-    @staticmethod
-def analyze(audio_bytes, label="Sample"):
-    try:
-        audio_file = io.BytesIO(audio_bytes)
-        y, sr = librosa.load(audio_file, sr=22050)
-        
-        # 1. IMPROVED: Multiple RMS thresholds for breath detection
-        rms = librosa.feature.rms(y=y)[0]
-        times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=512)
-        
-        # 2. Detect breath candidates (local minima in RMS)
-        breath_candidates = []
-        for i in range(1, len(rms)-1):
-            if (rms[i] < rms[i-1] * 0.7 and  # Local minimum
-                rms[i] < rms[i+1] * 0.7 and 
-                rms[i] < np.mean(rms) * 0.4):  # Below average volume
-                breath_candidates.append(times[i])
-        
-        # 3. Filter realistic breaths (2-10 seconds apart, human-like)
-        events = []
-        if breath_candidates:
-            # Sort and filter by realistic IBI (2-8 seconds)
-            candidates = sorted(breath_candidates)
-            for i, t in enumerate(candidates):
-                if 0 < i < len(candidates)-1:
-                    ibi = candidates[i+1] - t
-                    if 2.0 <= ibi <= 8.0:  # Human breathing interval
-                        events.append(t)
-        
-        # 4. Calculate HRV (more realistic)
-        ibi_cv = 0.25
-        if len(events) >= 3:
-            ibis = np.diff(events)
-            ibi_cv = np.std(ibis) / np.mean(ibis)
-        
-        # 5. HUMAN-LIKE SCORING
-        breath_count = len(events)
-        if breath_count == 0:
-            prob, verdict = 95.0, "🤖 SYNTHETIC (No Breathing)"
-        elif breath_count == 1:
-            prob, verdict = 75.0, "⚠️  SUSPICIOUS (Single Breath)"
-        elif 2 <= breath_count <= 6:
-            prob, verdict = 12.0, "✅ AUTHENTIC (Normal Breathing)"
-        else:  # Too many = suspicious
-            prob, verdict = 45.0, "❓  UNUSUAL (Over-breathing)"
+    def analyze(audio_bytes, label="Sample"):
+        try:
+            audio_file = io.BytesIO(audio_bytes)
+            y, sr = librosa.load(audio_file, sr=22050)
             
-        return {
-            "label": label, "y": y, "sr": sr, "events": events, 
-            "cv": round(ibi_cv, 3), "prob": round(prob, 1), 
-            "verdict": verdict, "count": breath_count
-        }
-    except Exception as e:
-        return {"label": label, "error": str(e), "prob": 100.0, "verdict": "ERROR"}
+            # IMPROVED BREATH DETECTION
+            rms = librosa.feature.rms(y=y)[0]
+            times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=512)
+            
+            # Find breath candidates (local minima)
+            breath_candidates = []
+            for i in range(1, len(rms)-1):
+                if (rms[i] < rms[i-1] * 0.7 and 
+                    rms[i] < rms[i+1] * 0.7 and 
+                    rms[i] < np.mean(rms) * 0.4):
+                    breath_candidates.append(times[i])
+            
+            # Filter realistic human breathing (2-8s intervals)
+            events = []
+            if breath_candidates:
+                candidates = sorted(breath_candidates)
+                for i, t in enumerate(candidates):
+                    if 0 < i < len(candidates)-1:
+                        ibi = candidates[i+1] - t
+                        if 2.0 <= ibi <= 8.0:
+                            events.append(t)
+            
+            # HRV calculation
+            ibi_cv = 0.25
+            if len(events) >= 3:
+                ibis = np.diff(events)
+                ibi_cv = np.std(ibis) / np.mean(ibis)
+            
+            # HUMAN-LIKE SCORING
+            breath_count = len(events)
+            if breath_count == 0:
+                prob, verdict = 95.0, "🤖 SYNTHETIC (No Breathing)"
+            elif breath_count == 1:
+                prob, verdict = 75.0, "⚠️  SUSPICIOUS (Single Breath)"
+            elif 2 <= breath_count <= 6:
+                prob, verdict = 12.0, "✅ AUTHENTIC (Normal Breathing)"
+            else:
+                prob, verdict = 45.0, "❓  UNUSUAL (Over-breathing)"
+                
+            return {
+                "label": label, "y": y, "sr": sr, "events": events, 
+                "cv": round(ibi_cv, 3), "prob": round(prob, 1), 
+                "verdict": verdict, "count": breath_count
+            }
+        except Exception as e:
+            return {"label": label, "error": str(e), "prob": 100.0, "verdict": "ERROR"}
 
 # --- PERFECT INTERFACE ---
 st.set_page_config(page_title="PNEUMA Forensic Pro", layout="wide")

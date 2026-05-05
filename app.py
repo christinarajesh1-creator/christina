@@ -11,44 +11,50 @@ st.session_state.setdefault('history', [])
 # PNEUMA ENGINE
 class PneumaEngine:
     @staticmethod
-    def analyze(audio_bytes, label="Sample"):
-        try:
-            audio_file = io.BytesIO(audio_bytes)
-            y, sr = librosa.load(audio_file, sr=22050)
-            
-            duration = len(y) / sr
-            
-            rms = librosa.feature.rms(y=y)[0]
-            times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
-            
-            silence_threshold = np.percentile(rms, 15)
-            breath_times = times[rms < silence_threshold]
-            
-            events = []
-            if len(breath_times) > 10:
-                breath_interval = 4.0
-                events = [breath_times[0]]
-                for t in breath_times:
-                    if t - events[-1] > breath_interval:
-                        events.append(t)
-            
-            breath_count = len(events)
-            
-            if breath_count >= 2:
-                prob = 5.0
-                verdict = "✅ HUMAN (Breathing Detected)"
-            else:
-                prob = 95.0
-                verdict = "🤖 SYNTHETIC (No Breathing)"
-            
-            return {
-                "label": label, "y": y, "sr": sr, "events": events, 
-                "prob": round(prob, 1), "verdict": verdict, 
-                "count": breath_count, "duration": round(duration, 1)
-            }
-        except:
-            return {"label": label, "prob": 100.0, "verdict": "ERROR", "count": 0}
-
+def analyze(audio_bytes, label="Sample"):
+    try:
+        audio_file = io.BytesIO(audio_bytes)
+        y, sr = librosa.load(audio_file, sr=22050)
+        
+        duration = len(y) / sr
+        
+        rms = librosa.feature.rms(y=y)[0]
+        times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
+        
+        silence_threshold = np.percentile(rms, 15)
+        breath_times = times[rms < silence_threshold]
+        
+        events = []
+        if len(breath_times) > 10:
+            breath_interval = 4.0
+            events = [breath_times[0]]
+            for t in breath_times:
+                if t - events[-1] > breath_interval:
+                    events.append(t)
+        
+        breath_count = len(events)
+        
+        # CV CALCULATION
+        cv = 0.0
+        if len(events) >= 3:
+            ibis = np.diff(events)
+            cv = np.std(ibis) / np.mean(ibis)
+        
+        if breath_count >= 2:
+            prob = 5.0
+            verdict = "✅ HUMAN"
+        else:
+            prob = 95.0
+            verdict = "🤖 SYNTHETIC"
+        
+        return {
+            "label": label, "y": y, "sr": sr, "events": events, 
+            "prob": round(prob, 1), "verdict": verdict, 
+            "count": breath_count, "duration": round(duration, 1),
+            "cv": round(cv, 3)  # ADDED CV
+        }
+    except:
+        return {"label": label, "prob": 100.0, "verdict": "ERROR", "count": 0, "cv": 0.0}
 # UI
 st.set_page_config(page_title="PNEUMA Forensic Pro", layout="wide")
 st.title("🫁 PNEUMA Forensic Pro")

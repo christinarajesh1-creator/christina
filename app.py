@@ -92,7 +92,7 @@ with col_left:
                     res = PneumaEngine.analyze(file.getvalue(), file.name)
                     st.session_state.history.append(res)
                     st.rerun()
-                    tab1, tab2 = st.tabs(["Results", "Validation"])
+                    
 
 df = pd.DataFrame(st.session_state.history)
 

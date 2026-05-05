@@ -60,16 +60,16 @@ with col1:
     except:
         audio_data = None
         
-    uploaded_file = st.file_uploader("Or Upload .wav / .mp3", type=["wav", "mp3"])
-    
-    final_audio = audio_data if audio_data else uploaded_file
-    
-    if final_audio:
-        sample_label = st.text_input("Sample Label", value="Testing Sample")
-        col1, col2 = st.columns(2)
-        if col1.button("🔬 ANALYZE & SAVE"):
-            res = PneumaEngine.analyze(final_audio.read(), sample_label)
+   uploaded_files = st.file_uploader("Upload multiple WAVs", 
+                                 type=['wav'], accept_multiple_files=True)
+
+if uploaded_files:
+    for file in uploaded_files[:30]:
+        label = st.text_input(f"Label for {file.name}", value=file.name.replace('.wav',''))
+        if st.button(f"Analyze {file.name}"):
+            res = PneumaEngine.analyze(file.read(), label)
             st.session_state.history.append(res)
+            st.rerun()
             
             # IMMEDIATE CSV SAVE
             df = pd.DataFrame(st.session_state.history)

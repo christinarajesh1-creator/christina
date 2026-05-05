@@ -94,10 +94,13 @@ with col_left:
                     st.session_state.history.append(res)
                     st.rerun()
 
-# Results section
+# Initialize df safely
 df = pd.DataFrame(st.session_state.history)
+if len(df) == 0:
+    df = pd.DataFrame(columns=['label', 'duration', 'count', 'cv', 'prob', 'verdict', 'y', 'sr', 'events'])
 
-if len(df) > 0:
+# Results section - only show if we have data
+if len(st.session_state.history) > 0:
     latest = df.iloc[-1].to_dict()
     
     st.subheader(f"📊 Latest Analysis: {latest['label']}")
@@ -122,12 +125,16 @@ if len(df) > 0:
     plt.tight_layout()
     st.pyplot(fig)
 
-# Dataset statistics
+# Dataset statistics - safe version
 st.markdown("---")
 st.header("📈 Dataset Statistics")
 
-human_count = len(df[df['prob'] < 50])
-ai_count = len(df[df['prob'] > 50])
+if len(df) > 0 and 'prob' in df.columns:
+    human_count = len(df[df['prob'] < 50])
+    ai_count = len(df[df['prob'] > 50])
+else:
+    human_count = 0
+    ai_count = 0
 
 col1, col2 = st.columns(2)
 col1.metric("👤 Human", human_count)
@@ -140,7 +147,7 @@ if st.button("🎯 Add Ground Truth Labels", use_container_width=True):
         st.session_state.history = df.to_dict('records')
         st.rerun()
 
-if 'ground_truth' in df.columns:
+if len(df) > 0 and 'ground_truth' in df.columns:
     labeled_count = (df['ground_truth'] != "").sum()
     st.info(f"📝 Labeled samples: {labeled_count}/{len(df)}")
     
@@ -156,28 +163,33 @@ if 'ground_truth' in df.columns:
                     st.session_state.history = df.to_dict('records')
                     st.rerun()
     
-    # Performance metrics
-    if labeled_count >= 5:
+    # Performance metrics - safe version
+    if labeled_count >= 5 and 'ground_truth' in df.columns:
         st.subheader("📊 Model Performance")
-        y_true = (df['ground_truth'] == 'AI').astype(int)
-        y_prob = df['prob'] / 100
-        
-        mask = df['ground_truth'] != ""
-        acc = accuracy_score(y_true[mask], (y_prob[mask] > 0.5).astype(int))
-        auc = roc_auc_score(y_true[mask], y_prob[mask])
-        
-        col1, col2 = st.columns(2)
-        col1.metric("✅ Accuracy", f"{acc:.1%}")
-        col2.metric("📈 AUC-ROC", f"{auc:.3f}")
+        try:
+            y_true = (df['ground_truth'] == 'AI').astype(int)
+            y_prob = df['prob'] / 100
+            
+            mask = df['ground_truth'] != ""
+            acc = accuracy_score(y_true[mask], (y_prob[mask] > 0.5).astype(int))
+            auc = roc_auc_score(y_true[mask], y_prob[mask])
+            
+            col1, col2 = st.columns(2)
+            col1.metric("✅ Accuracy", f"{acc:.1%}")
+            col2.metric("📈 AUC-ROC", f"{auc:.3f}")
+        except Exception as e:
+            st.warning("Could not calculate metrics due to data issues")
 
 # Summary table and export
-if st.session_state.history:
+if len(st.session_state.history) > 0:
     st.markdown("---")
     st.subheader("📋 Analysis Summary")
     display_cols = ['label', 'duration', 'count', 'cv', 'prob', 'verdict']
+    available_cols = [col for col in display_cols if col in df.columns]
     if 'ground_truth' in df.columns:
-        display_cols.append('ground_truth')
-    st.dataframe(df[display_cols], use_container_width=True)
+        available_cols.append('ground_truth')
+    
+    st.dataframe(df[available_cols], use_container_width=True)
     
     csv = df.to_csv(index=False).encode()
     st.download_button("💾 Export Results (CSV)", csv, "pneuma_results.csv", use_container_width=True)

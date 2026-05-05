@@ -86,3 +86,9 @@ if st.session_state.history:
     st.subheader("📊 Research Data Log")
     df = pd.DataFrame([{"Sample": r["label"], "Verdict": r["verdict"], "CV": round(r["cv"], 4), "Prob": f"{r['prob']}%"} for r in st.session_state.history])
     st.table(df)
+csv = df.to_csv(index=False)
+st.download_button("📊 Download Research Dataset", csv, "pneuma_results.csv")
+st.caption("""
+*Based on Inter-Beat Interval analysis (Levy WC, 2004)*
+PneumaForensics v1.0 - First respiratory deepfake detector
+""")

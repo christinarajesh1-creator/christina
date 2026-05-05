@@ -65,17 +65,24 @@ st.markdown("---")
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("🎤 LIVE RECORDING")
-    
-    # LIVE AUDIO RECORDING
-    audio_data = st.audio_input("🔴 Record your voice (speak naturally)")
+    st.subheader("🎤 Live Recording")
+    audio_data = st.audio_input("Live recording")
     
     if audio_data is not None:
-        if st.button("🔍 ANALYZE LIVE", use_container_width=True):
-            res = PneumaEngine.analyze(audio_data.getvalue(), "LIVE RECORDING")
+        if st.button("🔍 Analyze"):
+            res = PneumaEngine.analyze(audio_data.getvalue(), "Live")
             st.session_state.history.append(res)
             st.rerun()
     
+    st.subheader("📁 Upload")
+    uploaded_file = st.file_uploader("Audio file", type=['wav', 'mp3', 'm4a'])
+    
+    if uploaded_file is not None:
+        if st.button("🔍 Analyze"):
+            uploaded_file.seek(0)
+            res = PneumaEngine.analyze(uploaded_file.getvalue(), uploaded_file.name)
+            st.session_state.history.append(res)
+            st.rerun()
     st.subheader("📁 UPLOAD FILES")
     
     # Single file upload

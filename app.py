@@ -18,13 +18,13 @@ class PneumaEngine:
         rms = librosa.feature.rms(y=y)
         zcr = librosa.feature.zero_crossing_rate(y=y)
         
-        threshold = np.percentile(rms, 15)
-        breath_frames = np.where((rms < threshold) & (zcr < np.mean(zcr)*0.7))
+        threshold = np.percentile(rms, 10)  # More silence
+        breath_frames = np.where((rms < threshold) & (zcr < np.mean(zcr)*0.6))
         
         events = []
         if len(breath_frames[0]) > 0:
             diffs = np.diff(breath_frames[0])
-            splits = np.where(diffs > 5)[0]
+            splits = np.where(diffs > 3)[0]  # More sensitive
             clusters = np.split(breath_frames[0], splits + 1)
             events = [np.mean(c) * (512/sr) for c in clusters if len(c) > 1]
 
@@ -33,14 +33,15 @@ class PneumaEngine:
             ibis = np.diff(events)
             ibi_cv = np.std(ibis) / np.mean(ibis)
         
-        if len(events) < 1:
-            prob, verdict = 99.0, "SYNTHETIC (No Respiration)"
-        elif ibi_cv < 0.07:
-            prob, verdict = 94.0, "SYNTHETIC (Machine-Regular)"
-        elif 0.15 <= ibi_cv <= 0.48:
-            prob, verdict = 12.0, "AUTHENTIC (Biological Rhythm)"
+        # RELAXED THRESHOLDS - HUMANS PASS
+        if len(events) < 2:
+            prob, verdict = 85.0, "LIKELY SYNTHETIC (Few Breaths)"
+        elif ibi_cv < 0.12:  # Was 0.07
+            prob, verdict = 75.0, "SYNTHETIC (Regular)"  # Was 94%
+        elif ibi_cv < 0.25:  # New human range
+            prob, verdict = 25.0, "LIKELY AUTHENTIC"
         else:
-            prob, verdict = 50.0, "INCONCLUSIVE (High Noise)"
+            prob, verdict = 10.0, "AUTHENTIC (Highly Variable)"
             
         return {"label": label, "y": y, "sr": sr, "events": events, "cv": ibi_cv, "prob": prob, "verdict": verdict, "count": len(events)}
 # --- PERFECT INTERFACE ---

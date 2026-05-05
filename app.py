@@ -51,8 +51,6 @@ col1.metric("Accuracy", "94.2%")
 col2.metric("EER", "5.8%")
 col3.metric("Samples", len(st.session_state.history))
 
-if 'history' not in st.session_state:
-    st.session_state.history = []
 
 col1, col2 = st.columns([1, 2])
 

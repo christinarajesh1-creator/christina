@@ -93,17 +93,53 @@ with col_left:
                     st.session_state.history.append(res)
                     st.rerun()
 
-if st.session_state.history:
-    latest = st.session_state.history[-1]
+with tab2:
+    st.header("Validation")
     
-    with col_right:
-        st.subheader(f"Latest: {latest['label']}")
-        st.metric("AI Prob", f"{latest['prob']}%")
-        st.metric("Breaths", latest['count'])
-        st.metric("CV", f"{latest['cv']:.3f}")
-        st.success(latest['verdict'])
+    df = pd.DataFrame(st.session_state.history)
+    
+    # Dataset counts
+    human_count = len(df[df['prob'] < 50])
+    ai_count = len(df[df['prob'] > 50])
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Human", human_count)
+    col2.metric("AI", ai_count)
+    
+    # Ground truth toggle
+    if st.button("Add Ground Truth"):
+        if 'ground_truth' not in df.columns:
+            df['ground_truth'] = ""
+            st.session_state.history = df.to_dict('records')
+            st.rerun()
+    
+    # Simple labeling
+    if 'ground_truth' in df.columns:
+        labeled_count = (df['ground_truth'] != "").sum()
+        st.write(f"Labeled: {labeled_count}")
         
-        st.audio(latest['y'], sample_rate=latest['sr'])
+        for idx, row in df.iterrows():
+            if row['ground_truth'] == "":
+                with st.expander(row['label']):
+                    truth = st.radio("", ["Human", "AI"], key=f"t_{idx}")
+                    if st.button("Save", key=f"s_{idx}"):
+                        df.loc[idx, 'ground_truth'] = truth
+                        st.session_state.history = df.to_dict('records')
+                        st.rerun()
+        
+        # Metrics
+        if labeled_count >= 5:
+            from sklearn.metrics import accuracy_score, roc_auc_score
+            y_true = (df['ground_truth'] == 'AI').astype(int)
+            y_prob = df['prob'] / 100
+            
+            mask = y_true != ""
+            acc = accuracy_score(y_true[mask], (y_prob[mask] > 0.5).astype(int))
+            auc = roc_auc_score(y_true[mask], y_prob[mask])
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Accuracy", f"{acc:.1%}")
+            col2.metric("AUC", f"{auc:.3f}")
         
         fig, ax = plt.subplots(figsize=(12, 3))
         t_plot = np.linspace(0, len(latest['y'])/latest['sr'], len(latest['y']))

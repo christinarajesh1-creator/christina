@@ -2,157 +2,103 @@ import streamlit as st
 import numpy as np
 import librosa
 import io
-from scipy.spatial import distance
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.spatial import distance
 
-def pneuma_forensic(y, sr, filename):
-    """6-parameter forensic AI detection"""
+st.set_page_config(layout="wide", page_title="PneumaForensic")
+
+def analyze_audio(y, sr, filename):
     try:
+        y = librosa.util.normalize(y)
+        duration = len(y) / sr
         rms = librosa.feature.rms(y=y)[0]
         times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
         
-        # Breath detection - tuned for accuracy
-        silence_threshold = np.percentile(rms, 10)
-        breath_candidates = times[rms < silence_threshold * 0.8]
+        # Detection Logic
+        threshold = np.percentile(rms, 15)
+        breath_candidates = times[rms < threshold * 0.7]
         
-        # Filter human-like gaps only
         events = []
-        last_t = 0
+        last_t = -5.0
         for t in breath_candidates:
-            gap = t - last_t
-            if gap > 1.5 and gap < 10.0:  # Human breathing rhythm
-                events.append(t)
+            if t - last_t > 1.5: 
+                events.append(float(t))
                 last_t = t
         
-        duration = len(y) / sr
+        # 6-Parameter Calculations
+        # 1. IBI Regularity (28%)
+        ibis = np.diff(events) if len(events) > 1 else [0]
+        p1 = 1.0 - (np.std(ibis) / np.mean(ibis)) if np.mean(ibis) > 0 else 1.0
         
-        if len(events) < 2:
-            return {
-                "filename": filename[:30], "duration": round(duration,1), "breath_count": 0,
-                "ibi_reg": 0.0, "amp_var": 0.0, "sim_score": 1.0, "synthetic_score": 0.85,
-                "breath_events": []
-            }
+        # 2. Breath Amplitude (15%)
+        amps = [np.max(np.abs(y[int(t*sr):int((t+0.4)*sr)])) for t in events]
+        p2 = 1.0 - (np.std(amps) / np.mean(amps)) if np.mean(amps) > 0 else 1.0
         
-        # === 1. IBI REGULARITY (28%) ===
-        ibis = np.diff(events)
-        ibi_reg = np.std(ibis) / np.max([np.mean(ibis), 0.1])
+        # 3. Breath Duration (12%)
+        p3 = 0.8 if len(set([round(x, 2) for x in ibis])) < len(ibis)/2 else 0.2
         
-        # === 2. AMPLITUDE VARIATION (15%) ===
-        amps = []
-        for t in events:
-            start = max(0, int((t-0.4)*sr))
-            end = min(len(y), int((t+0.6)*sr))
-            if end > start:
-                amps.append(np.std(y[start:end]))
-        amp_var = np.std(amps) / np.max([np.mean(amps), 0.01]) if len(amps) > 1 else 0
+        # 4. Breath Presence (15%)
+        p4 = 1.0 if len(events) < (duration / 10) else 0.1
         
-        # === 6. BREATH SIMILARITY (18%) - KEY AI DETECTOR ===
-        mfccs = []
-        for t in events:
-            start = max(0, int((t-0.4)*sr))
-            end = min(len(y), int((t+0.6)*sr))
-            if end - start > sr * 0.05:
-                mfcc = librosa.feature.mfcc(y=y[start:end], sr=sr, n_mfcc=3)
-                if mfcc.shape[1] > 0:
-                    mfccs.append(np.mean(mfcc, axis=1))
+        # 5. Spectral Continuity (12%)
+        zcr = librosa.feature.zero_crossing_rate(y)[0]
+        p5 = np.clip(np.std(zcr) * 15, 0, 1)
         
-        sim_score = 0.0
+        # 6. Breath Similarity (18%)
+        mfccs = [np.mean(librosa.feature.mfcc(y=y[int(t*sr):int((t+0.4)*sr)], sr=sr, n_mfcc=13), axis=1) for t in events]
+        p6 = 0.0
         if len(mfccs) > 1:
-            dists = []
-            for i in range(len(mfccs)):
-                for j in range(i+1, len(mfccs)):
-                    dists.append(distance.euclidean(mfccs[i], mfccs[j]))
-            sim_score = 1 - np.mean(dists) / 100  # LOW distance = HIGH similarity = AI
-        
-        # === SYNTHETIC SCORE (LOW variation + HIGH similarity = AI) ===
-        synthetic_score = (
-            (1 - ibi_reg * 0.3) * 0.4 +      # Regular timing = AI
-            (1 - amp_var * 0.3) * 0.3 +       # Uniform amplitude = AI
-            sim_score * 0.3                    # Identical breaths = AI
-        )
+            dists = [distance.euclidean(mfccs[i], mfccs[j]) for i in range(len(mfccs)) for j in range(i+1, len(mfccs))]
+            p6 = np.clip(1 - (np.mean(dists) / 300), 0, 1)
+
+        score = (p1*0.28) + (p2*0.15) + (p3*0.12) + (p4*0.15) + (p5*0.12) + (p6*0.18)
         
         return {
-            "filename": filename[:30], 
-            "duration": round(duration,1), 
-            "breath_count": len(events),
-            "ibi_reg": round(ibi_reg, 2),
-            "amp_var": round(amp_var, 2),
-            "sim_score": round(sim_score, 2),
-            "synthetic_score": round(synthetic_score, 2),
-            "breath_events": events
+            "filename": filename,
+            "score": round(np.clip(score, 0, 1), 2),
+            "events": events,
+            "y": y,
+            "sr": sr,
+            "duration": duration
         }
     except:
-        return {"filename": filename[:30], "synthetic_score": 0.9, "breath_count": 0}
+        return None
 
-st.set_page_config(layout="wide")
 st.title("🫁 PneumaForensic")
 
-uploaded_files = st.file_uploader("Upload", type=['wav','mp3','m4a'], accept_multiple_files=True)
+files = st.file_uploader("Batch Upload", type=['wav', 'mp3', 'm4a'], accept_multiple_files=True)
 
-if uploaded_files:
+if files:
     results = []
-    
-    progress = st.progress(0)
-    for i, file in enumerate(uploaded_files):
-        file_bytes = io.BytesIO(file.getvalue())
-        y, sr = librosa.load(file_bytes, sr=22050, mono=True)
-        result = pneuma_forensic(y, sr, file.name)
-        results.append(result)
-        progress.progress((i+1)/len(uploaded_files))
-    
-    df = pd.DataFrame(results)
-    
-    st.subheader("Results")
-    st.dataframe(df[['filename', 'breath_count', 'ibi_reg', 'amp_var', 'sim_score', 'synthetic_score']])
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Files", len(results))
-    col2.metric("Avg AI", f"{df['synthetic_score'].mean():.0%}")
-    
-    # Verdict
-    ai_count = len(df[df['synthetic_score'] > 0.5])
-    if ai_count > len(results) * 0.5:
-        st.error(f"🔴 {ai_count}/{len(results)} files likely AI")
-    else:
-        st.success(f"🟢 {len(results)-ai_count}/{len(results)} files likely human")
-    
-    # Chart
-    fig, ax = plt.subplots(figsize=(12, 4))
-    colors = ['red' if s > 0.5 else 'green' for s in df['synthetic_score']]
-    ax.bar(range(len(df)), df['synthetic_score'], color=colors, alpha=0.7)
-    ax.set_ylim(0, 1)
-    ax.set_ylabel('AI Score')
-    st.pyplot(fig)
-    
-    # Waveforms (4 max)
-    st.subheader("Breath Patterns")
-    for result in results[:4]:
-        col1, col2 = st.columns([3,1])
-        with col1:
-            fig, ax = plt.subplots(figsize=(10, 2))
-            t_max = result['duration']
-            t_axis = np.linspace(0, t_max, 5000)
-            ax.plot(t_axis, np.random.normal(0, 0.08, 5000), 'gray', lw=0.6, alpha=0.8)
-            
-            events = result['breath_events']
-            if events:
-                for t in events:
-                    if t < t_max:
-                        ax.axvline(t, color='red', ls='--', lw=2, alpha=0.9)
-                ax.scatter(events, [0]*len(events), color='red', s=40, marker='v', zorder=10)
-            
-            color = 'red' if result['synthetic_score'] > 0.5 else 'green'
-            ax.set_title(f"{result['filename']} (AI: {result['synthetic_score']:.0%})", color=color, fontsize=11)
-            ax.set_yticks([])
-            ax.set_xlim(0, t_max)
-            st.pyplot(fig)
-        
-        with col2:
-            st.metric("AI", f"{result['synthetic_score']:.0%}")
-            st.metric("Breaths", result['breath_count'])
-    
-    st.download_button("Download CSV", pd.DataFrame(results).to_csv(index=False).encode(), "results.csv")
+    for f in files:
+        y, sr = librosa.load(io.BytesIO(f.read()), sr=16000)
+        res = analyze_audio(y, sr, f.name)
+        if res: results.append(res)
 
-else:
-    st.info("👆 Upload multiple audio files")
+    # Summary Table
+    df = pd.DataFrame([{"File": r['filename'], "AI Score": f"{r['score']:.0%}"} for r in results])
+    st.table(df)
+
+    # Detailed Visual Analysis
+    for r in results:
+        fig, ax = plt.subplots(figsize=(15, 3))
+        
+        # The Gray Waves
+        time_axis = np.linspace(0, r['duration'], len(r['y']))
+        ax.plot(time_axis, r['y'], color='gray', alpha=0.5, lw=0.5)
+        
+        # The Red Dashed Lines
+        for e in r['events']:
+            ax.axvline(e, color='red', linestyle='--', lw=1.5)
+            
+        color = "red" if r['score'] > 0.5 else "green"
+        ax.set_title(f"{r['filename']} | Detection Score: {r['score']:.0%}", color=color, loc='left', fontsize=12, fontweight='bold')
+        ax.set_xlim(0, r['duration'])
+        ax.set_ylim(-1, 1)
+        ax.axis('off')
+        
+        st.pyplot(fig)
+        st.divider()
+
+    st.download_button("Export Data", df.to_csv(index=False).encode('utf-8'), "pneuma_report.csv")

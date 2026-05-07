@@ -12,15 +12,20 @@ def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
         return 0.98, {k: "100%" for k in ["Timing", "Purity", "Presence", "Amplitude", "Splice", "Similarity", "CV"]}
 
-    # 1. Timing Regularity (28%) - Recalibrated for Roger's 0.36 CV
+    # 1. Rhythmic Entropy (28%) - TARGETING THE ROGER CV (0.44)
+    # Humans are chaotic (CV > 0.65). AI mimics variety (CV 0.3-0.5).
+    # We penalize the 'Pseudo-Random' zone where Roger hides.
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p1 = np.clip(1.2 - (ibi_cv * 2), 0, 1)
+    p1 = np.clip(1.5 - (ibi_cv * 2.3), 0, 1)
 
-    # 2. Spectral Purity (18%) - THE ROGER KILLER
-    # AI breaths are 'flat'. Human breaths are chaotic noise.
+    # 2. Spectral Noise Flux (18%) - HUMAN PROTECTOR
+    # Humans have 'messy' chaotic breath noise. AI has 'flat' smooth noise.
+    # Higher Flatness Flux = Human. Lower Flatness Flux = AI.
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
-    p2 = np.clip(1.0 - (np.mean(flatness) * 120), 0, 1) if flatness else 0.5
+    avg_flat = np.mean(flatness) if flatness else 0
+    # Penalty for 'too clean' (AI)
+    p2 = np.clip(1.0 - (avg_flat * 140), 0, 1)
 
     # 3. Presence/Density (15%)
     bpm = (len(events) / duration) * 60
@@ -31,12 +36,12 @@ def get_forensic_score(y, sr, events, duration):
     amp_cv = np.std(amps) / np.mean(amps) if np.mean(amps) > 0 else 0
     p4 = np.clip(1.0 - (amp_cv / 0.5), 0, 1)
 
-    # 5. Digital Splice (12%) - REDUCED WEIGHT/SENSITIVITY
-    # Protects humans with noisy microphones from hitting 100%
+    # 5. Digital Splice (12%) - RE-CALIBRATED FOR NOISY MICS
+    # Now rewards microphone floor noise as a human trait.
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p5 = np.clip(np.std(zcr) * 8, 0, 1) 
+    p5 = np.clip(1.0 - (np.std(zcr) * 10), 0, 1) 
 
-    # 6. Similarity (12%)
+    # 6. Similarity (12%) - TEXTURE REUSE
     mfccs = [np.mean(librosa.feature.mfcc(y=y[int(t*sr):int((t+0.4)*sr)], sr=sr, n_mfcc=13), axis=1) for t in events]
     p6 = 0.0
     if len(mfccs) > 1:
@@ -94,7 +99,9 @@ if files:
             ax.plot(np.linspace(0, p['dur'], len(p['y'])), p['y'], color='gray', alpha=0.3, lw=0.5)
             for e in p['events']:
                 ax.axvline(e, color='red', linestyle='--', lw=1.5)
-            color = "red" if p['score'] > 0.5 else "green"
-            ax.set_title(f"{p['name']} | Confidence: {p['score']:.0%}", color=color, loc='left', fontweight='bold')
+            
+            color = "red" if p['score'] > 0.55 else "green"
+            ax.set_title(f"{p['name']} | AI Confidence: {p['score']:.0%}", color=color, loc='left', fontweight='bold')
             ax.axis('off')
             st.pyplot(fig)
+            st.divider()

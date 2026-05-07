@@ -76,8 +76,11 @@ def detect_breath_events(y, sr):
     
     return filtered_breaths[:16]  # Cap at 16 breaths
 
-def calculate_ai_score(events, y, sr):
+def calculate_ai_score(y, sr):
     """6 forensic parameters with exact weights - AI traits only"""
+    # FIRST detect breaths if none provided
+    events = detect_breath_events(y, sr)
+    
     weights = np.array([0.28, 0.15, 0.12, 0.15, 0.12, 0.18])
     
     # Base score for breath count
@@ -131,7 +134,7 @@ def calculate_ai_score(events, y, sr):
     for i in range(min(6, len(events)-1)):
         t1, t2 = events[i], events[i+1]
         s1, e1 = int(max(0, (t1-0.11)*sr)), int(min(len(y), (t1+0.16)*sr))
-        s2, e2 = int(max(0, (t2-0.11)*sr)), int(min(len(y), (t2+0.16)*sr))
+        s2, e2 = int(max(0, (t2-0.11)*sr)), int(min(len(y), (t2+0.19)*sr))
         zcr1 = librosa.feature.zero_crossing_rate(y[s1:e1])[0].mean()
         zcr2 = librosa.feature.zero_crossing_rate(y[s2:e2])[0].mean()
         zcr_changes.append(abs(zcr1 - zcr2))
@@ -205,7 +208,8 @@ def main():
                 })
                 continue
             
-            ai_score, events, params = calculate_ai_score(events=None, y=y, sr=sr)
+            # FIXED: Call with correct parameters (y, sr only)
+            ai_score, events, params = calculate_ai_score(y, sr)
             
             status = "🤖 **AI GENERATED**" if ai_score > 0.65 else "👤 **HUMAN**"
             
@@ -244,7 +248,8 @@ def main():
                 st.error(f"Could not process {file.name}")
                 continue
             
-            ai_score, events, _ = calculate_ai_score(events=None, y=y, sr=sr)
+            # FIXED: Call with correct parameters
+            ai_score, events, _ = calculate_ai_score(y, sr)
             
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 9), facecolor='black')
             

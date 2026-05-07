@@ -1,184 +1,136 @@
 import streamlit as st
 import numpy as np
 import librosa
+import io
 from scipy.spatial import distance
 import matplotlib.pyplot as plt
 import pandas as pd
-from io import BytesIO
 
-class PneumaForensic:
-    @staticmethod
-    def advanced_breath_analysis(y, sr, filename=""):
-        """Batch-ready breath analysis"""
-        try:
-            rms = librosa.feature.rms(y=y)[0]
-            times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
-            
-            silence_threshold = np.percentile(rms, 8)
-            breath_times = times[rms < silence_threshold * 0.7]
-            
-            events = []
-            last_t = 0
-            for t in breath_times:
-                gap = t - last_t
-                if 2.0 < gap < 8.0:
-                    events.append(t)
-                    last_t = t
-            
-            # Quick synthetic score calculation
-            if len(events) < 2:
-                return {
-                    "filename": filename,
-                    "duration": len(y)/sr,
-                    "breath_count": 0,
-                    "ibi_reg": 1.0, "synthetic_score": 0.95
-                }
-            
-            ibis = np.diff(events)
-            ibi_reg = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 1.0
-            ibi_reg = min(ibi_reg, 2.0)
-            
-            # Simplified weighted score for batch
-            synthetic_score = max(0, min(1 - ibi_reg * 0.3 + (1 - len(events)/10), 1.0))
-            
-            return {
-                "filename": filename,
-                "duration": len(y)/sr,
-                "breath_count": len(events),
-                "ibi_reg": ibi_reg,
-                "synthetic_score": synthetic_score,
-                "breath_events": events  # For plotting
-            }
-        except:
-            return {
-                "filename": filename, "duration": 0, 
-                "breath_count": 0, "ibi_reg": 1.0, "synthetic_score": 0.95,
-                "breath_events": []
-            }
+def analyze_breaths(y, sr, filename):
+    rms = librosa.feature.rms(y=y)[0]
+    times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
+    
+    # More accurate breath detection
+    silence_threshold = np.percentile(rms, 5)  # Stricter
+    breath_times = times[rms < silence_threshold * 0.6]
+    
+    # Human rhythm only (3-10s gaps)
+    events = []
+    last_t = 0
+    for t in breath_times:
+        gap = t - last_t
+        if 3.0 < gap < 10.0:
+            events.append(t)
+            last_t = t
+    
+    duration = len(y) / sr
+    
+    if len(events) < 3:
+        return {
+            "filename": filename,
+            "duration": duration,
+            "breath_count": len(events),
+            "avg_ibi": 0,
+            "ibi_cv": 1.0,
+            "human_score": 0.1,
+            "breath_events": events
+        }
+    
+    # Accurate IBI analysis
+    ibis = np.diff(events)
+    avg_ibi = np.mean(ibis)
+    ibi_cv = np.std(ibis) / avg_ibi  # Coefficient of variation
+    
+    # Human-like breathing score (HIGH = HUMAN)
+    breath_density = len(events) / duration
+    human_score = min(ibi_cv * 0.7 + breath_density * 3 + 0.2, 1.0)
+    
+    return {
+        "filename": filename,
+        "duration": duration,
+        "breath_count": len(events),
+        "avg_ibi": avg_ibi,
+        "ibi_cv": ibi_cv,
+        "human_score": human_score,
+        "breath_events": events
+    }
 
-# === BATCH STREAMLIT APP ===
-st.set_page_config(page_title="🫁 PneumaForensic Batch", layout="wide")
+st.set_page_config(page_title="PneumaForensic Batch", layout="wide")
 
-st.title("🫁 **PneumaForensic BATCH ANALYZER**")
-st.markdown("**Upload MULTIPLE audio files for side-by-side AI detection**")
+st.title("🫁 PneumaForensic Batch")
 
-# File uploader (MULTIPLE)
-uploaded_files = st.file_uploader("📁 Upload audio files (hold Ctrl/Cmd for multiple)", 
-                                 type=['wav','mp3','m4a','flac'], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload audio files", type=['wav','mp3','m4a'], 
+                                 accept_multiple_files=True)
 
 if uploaded_files:
-    # === BATCH PROCESSING ===
-    st.markdown("---")
-    progress_bar = st.progress(0)
     results = []
+    progress_bar = st.progress(0)
     
-    for i, uploaded_file in enumerate(uploaded_files):
-        filename = uploaded_file.name
-        st.info(f"🔍 Analyzing {filename}...")
+    for i, file in enumerate(uploaded_files):
+        filename = file.name
+        file_bytes = io.BytesIO(file.read())
         
-        y, sr = librosa.load(uploaded_file, sr=22050)
-        result = PneumaForensic.advanced_breath_analysis(y, sr, filename)
+        y, sr = librosa.load(file_bytes, sr=22050)
+        result = analyze_breaths(y, sr, filename)
         results.append(result)
         
-        progress = (i + 1) / len(uploaded_files)
-        progress_bar.progress(progress)
+        progress_bar.progress((i + 1) / len(uploaded_files))
     
-    # === RESULTS TABLE ===
     df = pd.DataFrame(results)
-    st.subheader("📊 **Batch Results**")
-    st.dataframe(df, use_container_width=True)
     
-    # === SUMMARY ===
-    st.markdown("---")
+    # Results table
+    st.subheader("Results")
+    st.dataframe(df[['filename', 'breath_count', 'ibi_cv', 'human_score']].round(3), 
+                use_container_width=True)
+    
+    # Metrics
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Files", len(results))
-    with col2:
-        avg_ai = df['synthetic_score'].mean()
-        st.metric("Avg AI Score", f"{avg_ai:.1%}")
-    with col3:
-        human_count = len(df[df['synthetic_score'] < 0.4])
-        st.metric("Human Files", human_count)
+    col1.metric("Files", len(results))
+    col2.metric("Avg Human Score", f"{df['human_score'].mean():.1%}")
+    col3.metric("Breaths Total", df['breath_count'].sum())
     
-    # === BAR CHART ===
-    st.subheader("🎯 **AI Probability Distribution**")
+    # Bar chart
+    st.subheader("Human Scores")
     fig, ax = plt.subplots(figsize=(12, 6))
-    colors = ['green' if score < 0.4 else 'orange' if score < 0.7 else 'red' 
-              for score in df['synthetic_score']]
-    bars = ax.bar(range(len(df)), df['synthetic_score'], color=colors, alpha=0.7)
-    ax.set_xlabel('Files')
-    ax.set_ylabel('AI Probability')
-    ax.set_title('Batch Analysis - AI Detection Scores')
+    colors = ['green' if s > 0.6 else 'orange' if s > 0.3 else 'red' for s in df['human_score']]
+    ax.bar(range(len(df)), df['human_score'], color=colors)
+    ax.set_ylim(0, 1)
+    ax.set_ylabel('Human Score')
     ax.set_xticks(range(len(df)))
-    ax.set_xticklabels([f"{f[:15]}..." for f in df['filename']], rotation=45)
-    plt.tight_layout()
+    ax.set_xticklabels([f[:12] for f in df['filename']], rotation=45)
     st.pyplot(fig)
     
-    # === INDIVIDUAL WAVEFORMS ===
-    st.markdown("---")
-    st.subheader("🎵 **Individual Breath Analysis**")
-    
-    # Show first 6 files max (for performance)
+    # Waveforms (top 6)
+    st.subheader("Breath Detection")
     for i, result in enumerate(results[:6]):
-        with st.expander(f"📈 {result['filename']} (AI: {result['synthetic_score']:.0%})"):
-            col1, col2 = st.columns([3, 1])
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            file_bytes = io.BytesIO(uploaded_files[i].read())
+            y_plot, sr_plot = librosa.load(file_bytes, sr=22050)
             
-            with col1:
-                # Waveform with breaths
-                fig, ax = plt.subplots(figsize=(12, 4))
-                y, sr = librosa.load(uploaded_files[i], sr=22050)
-                time_axis = np.linspace(0, len(y)/sr, len(y))
-                
-                # Gray speech waves
-                ax.plot(time_axis, y, 'gray', alpha=0.7, linewidth=0.8, label='Speech')
-                
-                # Red dashed breath lines
-                breath_times = result['breath_events']
-                if len(breath_times) > 0:
-                    for t in breath_times:
-                        ax.axvline(x=t, color='red', linestyle='--', linewidth=2, alpha=0.8)
-                    ax.scatter(breath_times, np.zeros(len(breath_times)), 
-                              color='red', s=80, marker='v', zorder=5, label=f'{len(breath_times)} Breaths')
-                else:
-                    ax.text(0.5, 0.5, '❌ NO BREATHS\n(STRONG AI)', 
-                           transform=ax.transAxes, ha='center', fontsize=14,
-                           bbox=dict(boxstyle='round', facecolor='red', alpha=0.3))
-                
-                ax.set_title(f"Breath Detection: {result['filename']}")
-                ax.set_xlabel('Time (s)')
-                ax.legend()
-                ax.grid(True, alpha=0.3)
-                plt.tight_layout()
-                st.pyplot(fig)
+            fig, ax = plt.subplots(figsize=(12, 3))
+            time_axis = np.linspace(0, len(y_plot)/sr_plot, len(y_plot))
+            ax.plot(time_axis, y_plot, 'gray', alpha=0.7, linewidth=0.5)
             
-            with col2:
-                st.metric("Breaths", result['breath_count'])
-                st.metric("Duration", f"{result['duration']:.1f}s")
-                st.metric("AI Score", f"{result['synthetic_score']:.0%}")
-
-    # === DOWNLOAD RESULTS ===
-    csv_buffer = BytesIO()
-    df.to_csv(csv_buffer, index=False)
-    st.download_button(
-        "💾 Download Results CSV",
-        csv_buffer.getvalue(),
-        "pneumaforensic_results.csv",
-        "text/csv"
-    )
+            breath_times = result['breath_events']
+            if len(breath_times) > 0:
+                for t in breath_times:
+                    ax.axvline(x=t, color='red', linestyle='--', linewidth=2)
+                ax.scatter(breath_times, np.zeros(len(breath_times)), 
+                          color='red', s=60, marker='v')
+            
+            ax.set_title(f"{result['filename']} ({result['breath_count']} breaths)")
+            ax.set_xlabel('Time (s)')
+            plt.tight_layout()
+            st.pyplot(fig)
+        
+        with col2:
+            st.metric("Human", f"{result['human_score']:.0%}")
+            st.metric("Breaths", result['breath_count'])
+    
+    # Download
+    csv = df.to_csv(index=False).encode()
+    st.download_button("Download CSV", csv, "results.csv")
 
 else:
-    st.info("""
-    👆 **Upload multiple audio files** (hold Ctrl/Cmd to select many)
-    
-    **Perfect for:**
-    - Dataset testing
-    - ElevenLabs vs Real comparison  
-    - RVC model validation
-    - Batch AI detection
-    """)
-    
-    st.markdown("""
-    ### 🎯 **What to look for:**
-    **🟢 HUMAN**: Uneven red breath lines, 4-12 breaths  
-    **🔴 AI**: Perfect grid OR no breaths at all
-    """)
+    st.info("Upload multiple audio files")

@@ -9,40 +9,38 @@ st.set_page_config(layout="wide", page_title="PneumaForensic")
 
 def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
-        return 0.98, {"Status": "Suspiciously Low Breaths"}
+        return 0.98, {"Status": "Abnormal (Zero Breaths)"}
 
-    # 1. Rhythmic Chaos (30%) - THE ROGER KILLER
-    # Roger mimics variety (CV 0.44). Humans are chaotic (CV > 0.65).
-    # We penalize any pattern that is "pseudo-random" (0.3 - 0.5 range).
+    # 1. Rhythmic Entropy (35%) - THE ROGER KILLER
+    # Penalizes 0.3-0.5 CV range. Humans must be > 0.65 for Green.
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p1_timing = np.clip(1.5 - (ibi_cv * 2.2), 0, 1)
+    p1 = np.clip(1.4 - (ibi_cv * 2.2), 0, 1)
 
-    # 2. Spectral Texture (25%) - HUMAN PROTECTION
-    # AI breaths are "flat/clean". Human breaths are "chaotic noise".
-    # High flatness flux = Human. Low flatness flux = AI.
+    # 2. Spectral Flatness flux (25%) - HUMAN PROTECTOR
+    # AI breaths are 'flat/smooth'. Human breaths are 'chaotic noise'.
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
-    p2_texture = np.clip(1.0 - (np.mean(flatness) * 40), 0, 1) if flatness else 0.5
+    # AI has lower entropy. If it's too 'clean' (low flatness flux), it's AI.
+    p2 = np.clip(1.0 - (np.mean(flatness) * 60), 0, 1) if flatness else 0.5
 
-    # 3. Noise Floor Entropy (20%)
-    # Humans have microphone hiss (entropy). AI has zero floor (pure digital silence).
-    noise_floor = np.std(y[y < np.percentile(y, 8)])
-    p3_silence = np.clip(1.0 - (noise_floor * 800), 0, 1)
+    # 3. Digital Silence floor (20%)
+    # Humans have mic hiss. AI has zero noise floor.
+    noise_floor = np.std(y[y < np.percentile(y, 10)])
+    p3 = np.clip(1.0 - (noise_floor * 500), 0, 1)
 
-    # 4. Digital Continuity (25%) - HARDENED
-    # Lowered sensitivity so background noise doesn't trigger 100% AI flags.
+    # 4. Digital Continuity (20%) - DE-WEIGHTED
+    # Lowered to 20% so noisy human mics stop triggering 100% AI flags.
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p4_splice = np.clip(np.std(zcr) * 12, 0, 1) 
+    p4 = np.clip(np.std(zcr) * 8, 0, 1) 
 
-    # FINAL WEIGHTED SCORE
-    score = (p1_timing * 0.30) + (p2_texture * 0.25) + (p3_silence * 0.20) + (p4_splice * 0.25)
+    score = (p1 * 0.35) + (p2 * 0.25) + (p3 * 0.20) + (p4 * 0.20)
     
     metrics = {
         "AI Score": f"{score:.0%}",
-        "Timing Regularity": f"{p1_timing:.0%}",
-        "Spectral Purity": f"{p2_texture:.0%}",
-        "Digital Silence": f"{p3_silence:.0%}",
-        "Digital Splice": f"{p4_splice:.0%}",
+        "Timing Regularity": f"{p1:.0%}",
+        "Spectral Purity": f"{p2:.0%}",
+        "Digital Silence": f"{p3:.0%}",
+        "Digital Splice": f"{p4:.0%}",
         "IBI CV": round(ibi_cv, 2)
     }
     
@@ -62,7 +60,6 @@ if files:
             y = librosa.util.normalize(y)
             rms = librosa.feature.rms(y=y).flatten()
             times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
-            # Use a more aggressive gate to find clear inhales
             threshold = np.percentile(rms, 10)
             
             events, last_t = [], -5.0
@@ -81,12 +78,10 @@ if files:
         except: continue
 
     if all_data:
-        # Master Report Table
         df = pd.DataFrame(all_data)
         st.subheader("📋 Forensic Report")
         st.dataframe(df, use_container_width=True)
 
-        # Waveform Visuals
         for p in plot_data:
             fig, ax = plt.subplots(figsize=(15, 1.5))
             ax.plot(np.linspace(0, p['dur'], len(p['y'])), p['y'], color='gray', alpha=0.3, lw=0.5)
@@ -98,3 +93,5 @@ if files:
             ax.axis('off')
             st.pyplot(fig)
             st.divider()
+
+    st.download_button("Export Results", df.to_csv(index=False).encode('utf-8'), "results.csv")

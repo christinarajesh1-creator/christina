@@ -5,134 +5,124 @@ import io
 import pandas as pd
 import matplotlib.pyplot as plt
 
-st.set_page_config(layout="wide", page_title="PneumaForensic")
+st.set_page_config(layout="wide")
 
-def detect_ai_breathing(y, sr):
-    """AI Detection - Low score = Human, High score = AI"""
+def detect_roger_ai(y, sr):
+    """Detects ElevenLabs Roger AI - high score = AI"""
     
-    # Get breath locations - high energy bursts
-    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
+    # Find breath-like energy peaks
+    rms = librosa.feature.rms(y=y, frame_length=1024, hop_length=256)[0]
     times = librosa.frames_to_time(rms, sr=sr)
     
-    # Find breath candidates (high RMS peaks)
-    breath_threshold = np.percentile(rms, 88)
-    breath_idx = np.where(rms > breath_threshold)[0]
+    # Roger AI breaths: high energy, regular spacing
+    peaks = []
+    for i in range(500, len(rms)-500):
+        if (rms[i] > np.percentile(rms, 92) and 
+            rms[i] > rms[i-1]*1.2 and rms[i] > rms[i+1]*1.2):
+            peaks.append(times[i])
     
+    # Filter minimum spacing
     events = []
-    last_time = 0
-    for i in breath_idx:
-        t = times[i]
-        if t > 2.0 and t - last_time > 1.2:  # Min 1.2s between breaths
-            events.append(t)
-            last_time = t
+    last_t = 0
+    for p in peaks:
+        if p > 2 and p - last_t > 1.0:
+            events.append(p)
+            last_t = p
     
-    # Minimum 3 breaths for analysis
     if len(events) < 3:
-        return 0.9, events, "FEW BREATHS - AI"
+        return 0.95, events  # Few breaths = AI
     
-    # AI DETECTION METRICS
+    # KEY AI SIGNALS
     ibis = np.diff(events)
     
-    # 1. TIMING: AI has LOW variation (regular)
-    timing_cv = np.std(ibis) / np.mean(ibis)
-    timing_ai = max(0, 1.0 - timing_cv * 3)  # Regular = AI
+    # 1. PERFECT REGULARITY (Roger CV < 0.25)
+    cv = np.std(ibis) / np.mean(ibis)
+    timing_ai = 1.0 if cv < 0.25 else 0.1
     
-    # 2. BREATH PURITY: AI breaths are CLEAN
-    purity_ai = []
-    for t in events[:6]:
-        start = max(0, int((t-0.15)*sr))
-        end = min(len(y), int((t+0.25)*sr))
+    # 2. BREATH CLEANLINESS
+    clean_breaths = 0
+    for t in events[:5]:
+        start = max(0, int((t-0.12)*sr))
+        end = min(len(y), int((t+0.18)*sr))
         breath = y[start:end]
-        if len(breath) > sr//4:
-            purity = np.mean(librosa.feature.spectral_flatness(breath))
-            purity_ai.append(purity)
+        if len(breath) > 100:
+            flatness = np.mean(librosa.feature.spectral_flatness(breath))
+            if flatness > 0.65:  # Roger threshold
+                clean_breaths += 1
     
-    avg_purity = np.mean(purity_ai) if purity_ai else 0.9
-    purity_score = max(0, (avg_purity - 0.4) * 2.5)
+    purity_ai = clean_breaths / max(1, len(events[:5]))
     
-    # 3. NOISE FLOOR: AI = silent
-    quiet_parts = y[np.abs(y) < np.std(y)*0.3]
-    noise_floor = np.std(quiet_parts) if len(quiet_parts) > 10000 else 0
-    noise_ai = max(0, 1.0 - noise_floor * 15000)
+    # 3. SILENCE QUALITY
+    silence = y[(np.abs(y) < 0.002)]
+    silence_std = np.std(silence) if len(silence) > 1000 else 0
+    silence_ai = 1.0 if silence_std < 0.0005 else 0.0
     
-    # 4. BREATH RATE: AI often wrong
-    duration = events[-1] - events[0]
-    bpm = len(events) / duration * 60 if duration > 0 else 0
-    rate_ai = 1.0 if bpm < 10 or bpm > 35 else 0.1
+    # 4. BREATH AMPLITUDE CONSISTENCY
+    amps = []
+    for t in events:
+        start = max(0, int((t-0.1)*sr))
+        end = min(len(y), int((t+0.2)*sr))
+        amps.append(np.max(np.abs(y[start:end])))
     
-    # TOTAL AI SCORE (0-1, >0.6 = AI)
-    ai_score = (timing_ai * 0.4 + purity_score * 0.25 + noise_ai * 0.2 + rate_ai * 0.15)
+    amp_cv = np.std(amps) / np.mean(amps) if amps else 1
+    amp_ai = 1.0 if amp_cv < 0.3 else 0.2  # Roger = consistent volume
     
-    status = "🤖 AI" if ai_score > 0.6 else "👤 HUMAN"
+    # ROGER AI SCORE
+    score = (timing_ai * 0.35 + purity_ai * 0.25 + silence_ai * 0.2 + amp_ai * 0.2)
     
-    return ai_score, events, {
-        "Score": f"{ai_score:.0%}",
-        "Status": status,
-        "Timing": f"{timing_ai:.0%}",
-        "Purity": f"{purity_score:.0%}",
-        "Noise": f"{noise_ai:.0%}",
-        "BPM": f"{bpm:.1f}",
-        "Breaths": len(events)
-    }
+    return score, events
 
-st.title("🫁 PneumaForensic v3")
+st.title("PneumaForensic")
 
-st.markdown("**🟢 LOW % = HUMAN** | **🔴 HIGH % = AI**")
-
-files = st.file_uploader("Upload audio files", type=['wav', 'mp3', 'm4a'], accept_multiple_files=True)
+files = st.file_uploader("Upload", type=['wav','mp3','m4a'], accept_multiple_files=True)
 
 if files:
+    col1, col2 = st.columns(2)
+    
     results = []
     
-    # Results table
-    st.subheader("📊 Analysis Results")
-    result_df = []
-    
-    # Graphs
-    st.subheader("📈 Breath Detection")
-    cols = st.columns(3)
-    
-    for idx, file in enumerate(files):
-        try:
-            # Reload file bytes
+    with col1:
+        for file in files:
             file.seek(0)
-            y, sr = librosa.load(io.BytesIO(file.read()), sr=16000)
-            
-            ai_score, events, metrics = detect_ai_breathing(y, sr)
-            metrics["File"] = file.name[:30]
-            results.append(metrics)
-            result_df.append(metrics)
-            
-            # Graph in columns
-            with cols[idx % 3]:
-                fig, ax = plt.subplots(figsize=(5, 3))
-                duration = min(20, len(y)/sr)
-                t_axis = np.linspace(0, duration, min(2000, len(y)))
-                y_plot = y[:len(t_axis)]
+            try:
+                y, sr = librosa.load(io.BytesIO(file.read()), sr=16000)
+                score, events = detect_roger_ai(y, sr)
                 
-                ax.plot(t_axis, y_plot, color='#4a90e2', linewidth=0.8, alpha=0.7)
+                status = "AI" if score > 0.7 else "HUMAN"
+                results.append({
+                    "File": file.name,
+                    "AI": f"{score:.1%}",
+                    "Status": status,
+                    "Breaths": len(events)
+                })
+            except:
+                results.append({"File": file.name, "AI": "ERROR", "Status": "Failed"})
+        
+        df = pd.DataFrame(results)
+        st.dataframe(df)
+    
+    with col2:
+        for file in files:
+            file.seek(0)
+            try:
+                y, sr = librosa.load(io.BytesIO(file.read()), sr=16000)
+                score, events = detect_roger_ai(y, sr)
                 
-                # Red breath markers
+                fig, ax = plt.subplots(figsize=(8, 3))
+                dur = min(20, len(y)/sr)
+                t = np.linspace(0, dur, 2000)
+                y_plot = y[:2000]
+                
+                ax.plot(t, y_plot, 'cyan', lw=0.7)
                 for e in events:
-                    if e < duration:
-                        ax.axvline(e, color='red', linestyle='--', linewidth=3, alpha=0.9)
+                    if e < dur:
+                        ax.axvline(e, 'red', ls='--', lw=3)
                 
-                color = 'red' if ai_score > 0.6 else 'green'
-                ax.set_title(f"{ai_score:.0%}\n{len(events)} breaths", 
-                           color=color, fontsize=12, pad=5)
-                ax.set_facecolor('#0f0f0f')
-                ax.set_xlim(0, duration)
+                color = 'red' if score > 0.7 else 'green'
+                ax.set_title(f"{score:.1%}", color=color, fontsize=20)
+                ax.set_facecolor('black')
                 ax.axis('off')
                 st.pyplot(fig)
-                plt.close(fig)
-                
-        except Exception as e:
-            st.error(f"Error {file.name}: {e}")
-    
-    # Show table
-    if result_df:
-        df = pd.DataFrame(result_df)
-        st.dataframe(df, use_container_width=True)
-
-st.markdown("---")
-st.caption("**Roger AI fails on Timing + Purity**")
+                plt.close()
+            except:
+                pass

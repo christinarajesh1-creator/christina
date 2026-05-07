@@ -4,7 +4,6 @@ import librosa
 import io
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.spatial import distance
 
 st.set_page_config(layout="wide", page_title="PneumaForensic")
 
@@ -12,43 +11,39 @@ def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
         return 0.95, {"Status": "Suspiciously Low Breath Count"}
 
-    # 1. Robotic Timing (30%) - Focus on "Perfect Spacing"
-    # Humans are chaotic (CV > 0.6). AI Roger mimics variety (CV 0.3-0.4).
-    # We penalize the 'Roger Zone' (0.2 - 0.45) heavily.
+    # 1. Pattern Fatigue (35%) - THE AI KILLER
+    # AI (Roger) maintains the same 'energy signature' throughout. 
+    # Humans get 'tired' or change intensity. We measure Spectral Flux Variance.
+    S = np.abs(librosa.stft(y))
+    flux = librosa.onset.onset_strength(S=librosa.amplitude_to_db(S), sr=sr)
+    flux_var = np.std(flux) / np.mean(flux) if np.mean(flux) > 0 else 0
+    # AI is too 'steady' (Low Flux Variance). Humans are chaotic (High Flux Variance).
+    p1_fatigue = np.clip(1.0 - (flux_var * 0.8), 0, 1)
+
+    # 2. Hardened Timing CV (25%)
+    # Roger mimics variety (0.47 CV). We now penalize anything below 0.60.
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p1_reg = np.clip(1.3 - (ibi_cv * 2), 0, 1) 
+    p2_timing = np.clip(1.1 - ibi_cv, 0, 1)
 
-    # 2. Spectral Flatness / "Empty Silence" (25%)
-    # AI breaths are "digitally flat". Human breaths have "noise/friction".
-    flatness_scores = []
-    for t in events:
-        start, end = int(max(0, t-0.1)*sr), int(min(len(y), t+0.3)*sr)
-        segment = y[start:end]
-        if len(segment) > 128:
-            flatness_scores.append(np.mean(librosa.feature.spectral_flatness(y=segment)))
-    
-    # If the breath is too 'flat' or 'clean' (low energy flux), it's AI.
-    avg_flatness = np.mean(flatness_scores) if flatness_scores else 0
-    p2_texture = np.clip(1.0 - (avg_flatness * 100), 0, 1)
-
-    # 3. Dynamic Range Purity (20%)
-    # Humans have microphone 'hiss'. AI Roger has absolute zero noise floor.
-    # We penalize too much perfection in the quietest parts.
-    noise_floor = np.std(y[y < np.percentile(y, 5)])
-    p3_silence = np.clip(1.0 - (noise_floor * 500), 0, 1)
-
-    # 4. Digital Splice (25%) - Anchor for Stitching
+    # 3. Breath Complexity (20%) - NEW
+    # AI breaths have repeating internal patterns. Humans are 100% unique noise.
+    # We use Zero-Crossing flux to detect 'texture repetition'.
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p4_splice = np.clip(np.std(zcr) * 50, 0, 1)
+    zcr_consistency = np.std(zcr) / np.mean(zcr) if np.mean(zcr) > 0 else 0
+    p3_complexity = np.clip(1.0 - zcr_consistency, 0, 1)
 
-    score = (p1_reg * 0.30) + (p2_texture * 0.25) + (p3_silence * 0.20) + (p4_splice * 0.25)
+    # 4. Digital Splice (20%) - Reduced Weight
+    # Lowered weight so noisy human mics don't trigger 100% AI flags.
+    p4_splice = np.clip(np.std(zcr) * 35, 0, 1)
+
+    score = (p1_fatigue * 0.35) + (p2_timing * 0.25) + (p3_complexity * 0.20) + (p4_splice * 0.20)
     
     metrics = {
-        "Timing Regularity (30%)": f"{p1_reg:.0%}",
-        "Spectral Purity (25%)": f"{p2_texture:.0%}",
-        "Digital Silence (20%)": f"{p3_silence:.0%}",
-        "Digital Splice (25%)": f"{p4_splice:.0%}",
+        "Pattern Fatigue (35%)": f"{p1_fatigue:.0%}",
+        "Timing Regularity (25%)": f"{p2_timing:.0%}",
+        "Texture Consistency (20%)": f"{p3_complexity:.0%}",
+        "Digital Splice (20%)": f"{p4_splice:.0%}",
         "IBI CV (Human > 0.6)": f"{ibi_cv:.2f}"
     }
     
@@ -65,7 +60,7 @@ if files:
             y = librosa.util.normalize(y)
             rms = librosa.feature.rms(y=y).flatten()
             times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
-            threshold = np.percentile(rms, 10) # Aggressive gate
+            threshold = np.percentile(rms, 10)
             
             events, last_t = [], -5.0
             for i, val in enumerate(rms):
@@ -82,7 +77,7 @@ if files:
             for e in events:
                 ax.axvline(e, color='red', linestyle='--', lw=1.5)
             
-            color = "red" if score > 0.55 else "green"
+            color = "red" if score > 0.5 else "green"
             ax.set_title(f"{f.name} | AI Confidence: {score:.0%}", color=color, loc='left', fontweight='bold')
             ax.axis('off')
             st.pyplot(fig)

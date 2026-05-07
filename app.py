@@ -10,45 +10,41 @@ st.set_page_config(layout="wide", page_title="PneumaForensic")
 
 def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
-        return 0.98, {"Status": "Abnormal (Insufficient Breaths)"}
+        return 0.98, {"Status": "Abnormal (Zero Breaths)"}
 
-    # 1. Vocal Fatigue / Pitch Drift (20%)
-    # Target human speech range (100Hz - 300Hz) to detect biological pitch instability
-    pitches, magnitudes = librosa.piptrack(y=y, sr=sr, fmin=100, fmax=300)
-    pitch_track = []
-    for t in range(pitches.shape[1]):
-        index = magnitudes[:, t].argmax()
-        pitch = pitches[index, t]
-        if pitch > 0:
-            pitch_track.append(pitch)
-    
-    # AI is a steady signal. Human is a drifting signal.
-    # We measure variance over time.
-    drift = np.std(pitch_track) / np.mean(pitch_track) if len(pitch_track) > 10 else 0
-    p1 = np.clip(1.0 - (drift * 25), 0, 1)
+    # 1. Pattern Fatigue (20%) - REPLACED PITCH WITH FLUX
+    # Humans drift in energy; AI is a steady mathematical stream.
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    fatigue_var = np.std(onset_env) / np.mean(onset_env) if np.mean(onset_env) > 0 else 0
+    # Higher variance = Human. Lower variance = AI.
+    p1 = np.clip(1.1 - (fatigue_var * 0.5), 0, 1)
 
-    # 2. Spectral Purity (20%)
+    # 2. Spectral Purity (20%) - PROTECTION FOR NOISY MICS
+    # AI breaths are 'digitally clean' (Low flatness). Human breaths are 'noisy' (High flatness).
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
-    avg_flat = np.mean(flatness) if flatness else 0.5
-    p2 = np.clip(1.0 - (avg_flat * 50), 0, 1)
+    avg_flat = np.mean(flatness) if flatness else 0.1
+    # Recalibrated: If the breath is 'too pure/flat' (AI), score goes UP.
+    p2 = np.clip(1.0 - (avg_flat * 60), 0, 1)
 
-    # 3. Timing Regularity (20%)
+    # 3. Timing Regularity (20%) - ROGER KILLER (Targeting CV 0.44)
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p3 = np.clip(1.4 - (ibi_cv * 2.2), 0, 1) # Punishing Roger's 0.4 CV
+    # Penalty kicks in heavily for CV < 0.55
+    p3 = np.clip(1.3 - (ibi_cv * 2), 0, 1)
 
-    # 4. Digital Silence (15%)
-    # AI has absolute zero floor. Humans have mic floor.
-    noise_floor = np.std(y[y < np.percentile(y, 8)])
-    p4 = np.clip(1.0 - (noise_floor * 600), 0, 1)
+    # 4. Digital Silence (15%) - HUMAN SHIELD
+    # Humans have floor noise. AI has zero floor. 
+    noise_floor = np.std(y[y < np.percentile(y, 10)])
+    p4 = np.clip(1.0 - (noise_floor * 500), 0, 1)
 
-    # 5. Digital Splice (15%)
+    # 5. Digital Splice (15%) - REDUCED SENSITIVITY
+    # Prevent noisy human mics from hitting 100%. 
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p5 = np.clip(np.std(zcr) * 35, 0, 1) 
+    p5 = np.clip(np.std(zcr) * 15, 0, 1) 
 
     # 6. Breath Density (10%)
     bpm = (len(events) / duration) * 60
-    p6 = 1.0 if bpm > 25 or bpm < 6 else 0.1
+    p6 = 1.0 if bpm > 24 or bpm < 5 else 0.1
 
     score = (p1*0.20) + (p2*0.20) + (p3*0.20) + (p4*0.15) + (p5*0.15) + (p6*0.10)
     
@@ -67,7 +63,7 @@ def get_forensic_score(y, sr, events, duration):
 
 st.title("🫁 PneumaForensic")
 
-files = st.file_uploader("Upload", type=['wav', 'mp3'], accept_multiple_files=True)
+files = st.file_uploader("Upload Batch", type=['wav', 'mp3'], accept_multiple_files=True)
 
 if files:
     all_data = []
@@ -97,19 +93,21 @@ if files:
         except: continue
 
     if all_data:
+        # Batch Table
         df = pd.DataFrame(all_data)
         st.dataframe(df, use_container_width=True)
 
+        # Waveforms
         for p in plot_data:
-            fig, ax = plt.subplots(figsize=(15, 1.8))
+            fig, ax = plt.subplots(figsize=(15, 1.6))
             ax.plot(np.linspace(0, p['dur'], len(p['y'])), p['y'], color='gray', alpha=0.3, lw=0.5)
             for e in p['events']:
                 ax.axvline(e, color='red', linestyle='--', lw=1.5)
             
             color = "red" if p['score'] > 0.55 else "green"
-            ax.set_title(f"{p['name']} | AI Confidence: {p['score']:.0%}", color=color, loc='left', fontweight='bold')
+            ax.set_title(f"{p['name']} | Confidence: {p['score']:.0%}", color=color, loc='left', fontweight='bold')
             ax.axis('off')
             st.pyplot(fig)
             st.divider()
 
-    st.download_button("Export CSV", df.to_csv(index=False).encode('utf-8'), "pneuma_results.csv")
+    st.download_button("Export CSV", df.to_csv(index=False).encode('utf-8'), "results.csv")

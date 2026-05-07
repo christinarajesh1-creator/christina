@@ -10,56 +10,57 @@ st.set_page_config(layout="wide", page_title="PneumaForensic 10.0")
 
 def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
-        return 0.98, {k: "100%" for k in ["Timing", "Shimmer", "Purity", "Presence", "Amplitude", "Splice", "Similarity", "CV"]}
+        return 0.98, {k: "100%" for k in ["Shimmer", "Purity", "Timing", "Silence", "Amp", "Splice"]}
 
-    # 1. BIOLOGICAL SHIMMER (25%) - THE ROGER KILLER
-    # Humans have chaotic micro-variations in energy. AI is a steady stream.
-    # Higher energy flux = Human. Lower flux = AI.
+    # 1. VOCAL SHIMMER (25%) - PENALIZE STABILITY
+    # AI is a steady mathematical wave. Humans have 'shimmer' (chaotic energy).
     S = np.abs(librosa.stft(y))
-    shimmer = np.std(librosa.feature.rms(S=S)) / np.mean(librosa.feature.rms(S=S))
-    p1_shimmer = np.clip(1.2 - (shimmer * 10), 0, 1)
+    rms = librosa.feature.rms(S=S).flatten()
+    shimmer_cv = np.std(rms) / np.mean(rms) if np.mean(rms) > 0 else 0
+    # HARDENED: If energy is too steady (AI), score goes UP.
+    p1 = np.clip(1.0 - (shimmer_cv * 2), 0, 1)
 
-    # 2. SPECTRAL ENTROPY (20%) - HUMAN PROTECTOR
-    # AI breaths are 'flat/pure'. Human breaths are chaotic white noise.
-    # We reward the 'noise' in your human WAV files.
+    # 2. SPECTRAL PURITY (20%) - PENALIZE CLEANLINESS
+    # AI breaths are 'pure' digital signals. Humans are messy noise.
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
     avg_flat = np.mean(flatness) if flatness else 0
-    # Penalty for being 'too pure' (AI). Roger is clean, humans are messy.
-    p2_purity = np.clip(1.0 - (avg_flat * 140), 0, 1)
+    # HARDENED: Roger is too 'pure/flat'. If flatness is low, score goes UP.
+    p2 = np.clip(1.0 - (avg_flat * 150), 0, 1)
 
-    # 3. TIMING IRREGULARITY (20%) - TARGETING CV 0.35-0.45
-    # Recalibrated: Roger's 0.44 is now flagged heavily. Humans at 0.6+ are Green.
+    # 3. TIMING REGULARITY (20%) - TARGETING ROGER (CV 0.35-0.45)
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p3_timing = np.clip(1.5 - (ibi_cv * 2.5), 0, 1)
+    # Penalty kicks in for any CV below 0.6. Roger's 0.39 will now be Red.
+    p3 = np.clip(1.5 - (ibi_cv * 2.5), 0, 1)
 
-    # 4. DIGITAL SILENCE FLOOR (15%)
-    # Humans have mic hiss. AI has absolute zero. Rewards mic floor noise.
-    noise_floor = np.std(y[y < np.percentile(y, 8)])
-    p4_silence = np.clip(1.0 - (noise_floor * 1200), 0, 1)
+    # 4. DIGITAL SILENCE (15%) - HUMAN PROTECTOR
+    # Rewards microphone hiss. Punishes perfect digital silence.
+    noise_floor = np.std(y[y < np.percentile(y, 10)])
+    p4 = np.clip(1.0 - (noise_floor * 1200), 0, 1)
 
-    # 5. AMPLITUDE UNIFORMITY (10%)
+    # 5. AMPLITUDE SCORE (10%) - UNIFORM VOLUME
     amps = [np.max(np.abs(y[int(max(0,t-0.1)*sr):int(min(len(y),t+0.3)*sr)])) for t in events]
     amp_cv = np.std(amps) / np.mean(amps) if np.mean(amps) > 0 else 0
-    p5_amp = np.clip(1.0 - (amp_cv / 0.5), 0, 1)
+    p5 = np.clip(1.0 - (amp_cv * 1.5), 0, 1)
 
-    # 6. DIGITAL SPLICE (10%) - HARDENED
-    # Reduced weight so noisy human mics don't trigger AI flags.
+    # 6. DIGITAL SPLICE (10%)
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p6_splice = np.clip(np.std(zcr) * 8, 0, 1) 
+    p6 = np.clip(np.std(zcr) * 10, 0, 1) 
 
-    score = (p1_shimmer*0.25) + (p2_purity*0.20) + (p3_timing*0.20) + (p4_silence*0.15) + (p5_amp*0.10) + (p6_splice*0.10)
+    score = (p1*0.25) + (p2*0.20) + (p3*0.20) + (p4*0.15) + (p5*0.10) + (p6*0.10)
     
-    return round(np.clip(score, 0, 1), 2), {
+    metrics = {
         "AI Confidence": f"{score:.0%}",
-        "Vocal Shimmer (25%)": f"{p1_shimmer:.0%}",
-        "Spectral Purity (20%)": f"{p2_purity:.0%}",
-        "Timing Regularity (20%)": f"{p3_timing:.0%}",
-        "Digital Silence (15%)": f"{p4_silence:.0%}",
-        "Amplitude Score (10%)": f"{p5_amp:.0%}",
-        "Digital Splice (10%)": f"{p6_splice:.0%}",
-        "IBI CV": round(ibi_cv, 2)
+        "Vocal Shimmer": f"{p1:.0%}",
+        "Spectral Purity": f"{p2:.0%}",
+        "Timing Regularity": f"{p3:.0%}",
+        "Digital Silence": f"{p4:.0%}",
+        "Amplitude Score": f"{p5:.0%}",
+        "Digital Splice": f"{p6:.0%}",
+        "CV": round(ibi_cv, 2)
     }
+    
+    return round(np.clip(score, 0, 1), 2), metrics
 
 st.title("🫁 PneumaForensic 10.0")
 
@@ -90,8 +91,8 @@ if files:
         except: continue
 
     if all_data:
-        st.subheader("📋 6-Parameter Master Report (Hardened)")
         df = pd.DataFrame(all_data)
+        st.subheader("📋 6-Parameter Forensic Master Report")
         st.dataframe(df, use_container_width=True)
 
         for p in plot_data:
@@ -103,6 +104,3 @@ if files:
             ax.set_title(f"{p['name']} | Confidence: {p['score']:.0%}", color=color, loc='left', fontweight='bold')
             ax.axis('off')
             st.pyplot(fig)
-            st.divider()
-
-    st.download_button("Export Report", df.to_csv(index=False).encode('utf-8'), "forensic_report.csv")

@@ -4,48 +4,50 @@ import librosa
 import io
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.spatial import distance
 
 st.set_page_config(layout="wide", page_title="PneumaForensic")
 
 def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
-        return 0.98, {"Status": "Abnormal (Silent/AI)"}
+        return 0.99, {"Status": "Suspiciously Low Breath Count"}
 
-    # 1. Spectral Purity (40%) - THE ROGER KILLER
-    # AI breaths are 'flat/clean'. Humans are chaotic noise.
-    # Higher Flatness = Human. Lower Flatness = AI.
+    # 1. THE ROGER KILLER: Spectral Purity (40%)
+    # AI breaths are 'flat' and 'crystalline'. Human breaths are chaotic noise.
+    # We penalize 'Digital Cleanliness'.
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
     avg_flat = np.mean(flatness) if flatness else 0
-    # Penalty for being 'too clean/pure' (AI)
-    p1 = np.clip(1.0 - (avg_flat * 140), 0, 1)
+    # Penalty for being 'too clean' (Low flatness flux = AI)
+    p1 = np.clip(1.0 - (avg_flat * 150), 0, 1)
 
-    # 2. Timing Regularity (30%) - TARGETING ROGER (CV 0.35-0.45)
-    # Humans are chaotic (>0.6). AI mimics variety (0.3-0.5).
-    ibis = np.diff(events)
-    ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p2 = np.clip(1.5 - (ibi_cv * 2.5), 0, 1)
+    # 2. THE HUMAN SHIELD: Digital Silence (30%)
+    # Humans have microphone hiss (noise floor). AI has absolute zero.
+    # We reward the 'messy' noise of a real mic.
+    noise_floor = np.std(y[y < np.percentile(y, 10)])
+    p2 = np.clip(1.0 - (noise_floor * 1500), 0, 1)
 
-    # 3. Digital Silence (30%) - HUMAN PROTECTOR
-    # Rewards microphone hiss. Punishes perfect digital silence.
-    noise_floor = np.std(y[y < np.percentile(y, 8)])
-    p3 = np.clip(1.0 - (noise_floor * 1200), 0, 1)
+    # 3. PATTERN STABILITY (30%)
+    # AI energy is mathematically steady. Humans drift in intensity.
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    flux_std = np.std(onset_env)
+    # If the energy is too 'steady' (Low Flux), it's AI.
+    p3 = np.clip(1.0 - (flux_std * 0.5), 0, 1)
 
     # FINAL WEIGHTED SCORE
-    score = (p1*0.40) + (p2*0.30) + (p3*0.30)
+    score = (p1 * 0.40) + (p2 * 0.30) + (p3 * 0.30)
     
     metrics = {
-        "AI Score": f"{score:.0%}",
+        "AI Confidence": f"{score:.0%}",
         "Spectral Purity (40%)": f"{p1:.0%}",
-        "Regularity (30%)": f"{p2:.0%}",
-        "Digital Silence (30%)": f"{p3:.0%}",
-        "IBI CV": round(ibi_cv, 2)
+        "Digital Silence (30%)": f"{p2:.0%}",
+        "Vocal Stability (30%)": f"{p3:.0%}"
     }
     
     return round(np.clip(score, 0, 1), 2), metrics
 
 st.title("🫁 PneumaForensic")
 
-files = st.file_uploader("Upload Batch", type=['wav', 'mp3'], accept_multiple_files=True)
+files = st.file_uploader("Batch Upload", type=['wav', 'mp3'], accept_multiple_files=True)
 
 if files:
     all_data = []
@@ -63,7 +65,7 @@ if files:
             for i, val in enumerate(rms):
                 if val < threshold:
                     t = times[i]
-                    if t - last_t > 1.6:
+                    if t - last_t > 1.7:
                         events.append(float(t))
                         last_t = t
             
@@ -77,10 +79,10 @@ if files:
     if all_data:
         # Master Forensic Table
         df = pd.DataFrame(all_data)
-        st.subheader("📋 Forensic Results")
+        st.subheader("📋 Forensic Report")
         st.dataframe(df, use_container_width=True)
 
-        # Charts
+        # Visuals
         for p in plot_data:
             fig, ax = plt.subplots(figsize=(15, 1.5))
             ax.plot(np.linspace(0, p['dur'], len(p['y'])), p['y'], color='gray', alpha=0.3, lw=0.5)

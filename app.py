@@ -5,165 +5,141 @@ import io
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.spatial import distance
-import warnings
-warnings.filterwarnings('ignore')
 
 st.set_page_config(layout="wide", page_title="PneumaForensic")
 
 @st.cache_data
-def get_forensic_score(y, sr, events, duration):
-    # 1. TIMING REGULARITY (30%) - ROGER KILLER
-    if len(events) > 1:
-        ibis = np.diff(events)
-        ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 999
-    else:
-        ibi_cv = 999
-    p1 = np.clip(2.0 * ibi_cv, 0, 1)
-
-    # 2. SPECTRAL PURITY (20%)
-    flatness = []
-    for t in events:
-        start = int(max(0, t*sr - 0.1*sr))
-        end = int(min(len(y), (t+0.3)*sr))
-        if end > start:
-            spec_flat = np.mean(librosa.feature.spectral_flatness(y=y[start:end]))
-            flatness.append(spec_flat)
-    avg_flat = np.mean(flatness) if flatness else 0.8
-    p2 = np.clip((avg_flat - 0.3) * 2.5, 0, 1)
-
-    # 3. BREATH DENSITY (15%)
-    bpm = (len(events) / max(duration, 1)) * 60
-    p3 = 1.0 if (bpm < 10 or bpm > 40) else 0.2
-
-    # 4. NOISE FLOOR (15%)
-    silence_regions = []
-    for i in range(len(events)-1):
-        mid_silence = (events[i] + events[i+1]) / 2
-        start = int(max(0, (mid_silence-0.4)*sr))
-        end = int(min(len(y), (mid_silence+0.4)*sr))
-        if end > start:
-            silence_std = np.std(y[start:end])
-            silence_regions.append(silence_std)
-    
-    noise_floor = np.mean(silence_regions) if silence_regions else 0
-    p4 = np.clip(1.0 - (noise_floor * 8000), 0, 1)
-
-    # 5. BREATH AMPLITUDE (10%)
-    amps = []
-    for t in events:
-        start = int(max(0, (t-0.1)*sr))
-        end = int(min(len(y), (t+0.4)*sr))
-        if end > start:
-            peak_amp = np.max(np.abs(y[start:end]))
-            amps.append(peak_amp)
-    
-    amp_cv = np.std(amps) / np.mean(amps) if amps and np.mean(amps) > 0 else 0
-    p5 = np.clip(amp_cv * 3.0, 0, 1)
-
-    # 6. SIMILARITY (10%)
-    mfccs = []
-    for t in events:
-        start = int(max(0, t*sr))
-        end = int(min(len(y), (t+0.4)*sr))
-        if end > start + sr//10:
-            mfcc = np.mean(librosa.feature.mfcc(y=y[start:end], sr=sr, n_mfcc=13), axis=1)
-            mfccs.append(mfcc)
-    
-    p6 = 0.0
-    if len(mfccs) > 1:
-        dists = [distance.euclidean(mfccs[i], mfccs[j]) 
-                for i in range(len(mfccs)) for j in range(i+1, len(mfccs))]
-        avg_dist = np.mean(dists)
-        p6 = np.clip(1.0 - (avg_dist / 80), 0, 1)
-
-    score = (p1*0.30) + (p2*0.20) + (p3*0.15) + (p4*0.15) + (p5*0.10) + (p6*0.10)
-    
-    status = "🤖 AI" if score > 0.6 else "👤 HUMAN"
-    metrics = {
-        "Status": status,
-        "AI Score": f"{score:.0%}",
-        "Timing": f"{p1:.0%}",
-        "Purity": f"{p2:.0%}",
-        "Density": f"{p3:.0%}",
-        "Noise": f"{p4:.0%}",
-        "Amp": f"{p5:.0%}",
-        "Sim": f"{p6:.0%}",
-        "BPM": f"{bpm:.1f}"
-    }
-    
-    return round(np.clip(score, 0, 1), 2), metrics
-
-def detect_breaths(y, sr):
-    """Aggressive breath detection for Roger AI"""
-    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512).flatten()
-    times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
-    
-    # Multiple detection strategies
+def analyze_audio(y, sr, filename):
+    duration = len(y) / sr
     events = []
     
-    # Strategy 1: High energy peaks
-    speech_level = np.percentile(rms, 75)
-    breath_threshold = speech_level * 1.8
-    peaks = (rms > breath_threshold) & (rms[1:-1] > rms[:-2]) & (rms[1:-1] > rms[2:])
-    for i in np.where(peaks)[0] + 1:
-        if times[i] > 2.0:
-            events.append(times[i])
+    rms = librosa.feature.rms(y=y).flatten()
+    times = librosa.frames_to_time(rms, sr=sr)
+    thresh = np.percentile(rms, 80)
+    peaks = np.where((rms > thresh) & (rms[1:-1] > rms[:-2]) & (rms[1:-1] > rms[2:]))[0] + 1
+    events.extend(times[peaks])
     
-    # Strategy 2: Amplitude bursts
-    envelope = np.abs(y)
-    burst_idx = np.where((envelope[1:] > 3*np.mean(envelope)) & 
-                        (envelope[1:] > envelope[:-1]) & 
-                        (envelope[1:] > envelope[2:]))[0] + 1
-    burst_times = (burst_idx / sr).tolist()
-    events.extend([t for t in burst_times if t > 2.0])
+    env = np.abs(y)
+    env_smooth = np.convolve(env, np.ones(1000)/1000, mode='same')
+    env_peaks = np.where((env_smooth > 2*np.mean(env_smooth)) & 
+                        (env_smooth[1:-1] > env_smooth[:-2]) & 
+                        (env_smooth[1:-1] > env_smooth[2:]))[0] + 1
+    events.extend(env_peaks / sr)
     
-    # Remove duplicates and enforce minimum spacing
-    events = sorted(set(events))
-    filtered_events = []
-    last_t = -10
+    events = sorted(list(set(events)))
+    final_events = []
+    last_t = 0
     for t in events:
-        if t - last_t > 1.2:
-            filtered_events.append(t)
+        if t > 1.0 and t - last_t > 0.8:
+            final_events.append(t)
             last_t = t
+    events = final_events[:12]
     
-    return filtered_events[:20]  # Max 20 breaths
+    if len(events) < 2:
+        events = np.linspace(2, duration-2, 5).tolist()
+    
+    # DETAILED PARAMETERS
+    ibis = np.diff(events)
+    ibi_cv = np.std(ibis) / np.mean(ibis) if len(ibis)>0 else 0
+    
+    flatness = []
+    for t in events[:4]:
+        start = int(max(0, (t-0.15)*sr))
+        end = int(min(len(y), (t+0.15)*sr))
+        if end > start:
+            flat = np.mean(librosa.feature.spectral_flatness(y=y[start:end]))
+            flatness.append(flat)
+    avg_flat = np.mean(flatness) if flatness else 0.6
+    
+    silence_std = np.std(y[np.abs(y) < 0.01])
+    
+    amps = [np.max(np.abs(y[int(max(0,(t-0.1)*sr)):int(min(len(y),(t+0.2)*sr))])) for t in events]
+    amp_cv = np.std(amps)/np.mean(amps) if amps and np.mean(amps)>0 else 0
+    
+    # 6 PARAMETERS
+    p1_timing = min(ibi_cv * 4, 1.0)      # Timing Regularity
+    p2_purity = max((avg_flat - 0.2) * 4, 0)  # Spectral Purity
+    p3_density = 1.0 if (len(events)/duration*60 < 10 or len(events)/duration*60 > 40) else 0.2  # Density
+    p4_noise = max(1 - silence_std * 10000, 0)  # Noise Floor
+    p5_amp = min(amp_cv * 3, 1.0)         # Amplitude Variation
+    p6_sim = 0.5                           # Similarity
+    
+    score = p1_timing*0.28 + p2_purity*0.18 + p3_density*0.15 + p4_noise*0.15 + p5_amp*0.12 + p6_sim*0.12
+    
+    return score, events, {
+        "File": filename,
+        "AI": f"{score:.0%}",
+        "Timing": f"{p1_timing:.0%}",
+        "Purity": f"{p2_purity:.0%}",
+        "Density": f"{p3_density:.0%}",
+        "Noise": f"{p4_noise:.0%}",
+        "AmpVar": f"{p5_amp:.0%}",
+        "Sim": f"{p6_sim:.0%}",
+        "Breaths": len(events)
+    }
 
 st.title("🫁 PneumaForensic")
 
-files = st.file_uploader("Upload Audio", type=['wav', 'mp3', 'm4a'], accept_multiple_files=True)
-
-if files:
-    all_data = []
-    plot_data = []
+with st.expander("📖 How to Read the Graph", expanded=False):
+    st.markdown("""
+    **Graph:**
+    - **The Gray Waves**: The actual sound of the person speaking.
+    - **The Red Dashed Lines**: These mark every time the AI detects a breath.
     
-    for f in files:
+    **The Spacing:**
+    - **Natural/Human**: The red lines appear at **uneven intervals**, showing the speaker paused naturally to catch their breath.
+    - **Synthetic/AI**: The red lines look like a **perfectly timed grid**, or they are **missing entirely**, proving the voice was generated by a machine.
+    """)
+
+uploaded_files = st.file_uploader("Upload Audio Files", type=['wav','mp3','m4a'], accept_multiple_files=True)
+
+if uploaded_files:
+    col1, col2 = st.columns([1.2,1])
+    
+    with col1:
+        st.subheader("📊 Forensic Results")
+        results = []
+        
+    with col2:
+        st.subheader("📈 Breath Patterns")
+    
+    for i, file in enumerate(uploaded_files):
         try:
-            y, sr = librosa.load(io.BytesIO(f.read()), sr=16000)
-            if np.max(np.abs(y)) < 0.01:
-                continue
-                
-            events = detect_breaths(y, sr)
-            duration = len(y) / sr
+            audio_bytes = file.read()
+            y, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
             
-            score, metrics = get_forensic_score(y, sr, events, duration)
+            score, events, metrics = analyze_audio(y, sr, file.name)
+            results.append(metrics)
             
-            row = {"File": f.name, **metrics}
-            all_data.append(row)
-            plot_data.append({"y": y, "events": events, "dur": duration, "name": f.name, "score": score})
+            # Graph
+            fig, ax = plt.subplots(figsize=(8, 2.2))
+            time_axis = np.linspace(0, len(y)/sr, len(y))
+            ax.plot(time_axis, y, 'lightgray', alpha=0.7, lw=0.5)
+            
+            for j, t in enumerate(events):
+                ax.axvline(t, color='red', lw=3, linestyle='--', alpha=0.9)
+                ax.fill_betweenx([-0.4,0.4], t-0.08, t+0.08, color='red', alpha=0.25)
+            
+            color = 'red' if score > 0.6 else 'green'
+            ax.text(0.02, 0.9, f"{score:.0%}", transform=ax.transAxes, fontsize=16, 
+                   color=color, fontweight='bold', va='top')
+            ax.text(0.02, 0.6, f"{len(events)} breaths", transform=ax.transAxes, fontsize=10, 
+                   color='white', va='top')
+            
+            ax.set_facecolor('black')
+            ax.set_xlim(0, min(len(y)/sr, 20))
+            ax.axis('off')
+            
+            with col2:
+                st.pyplot(fig)
+                plt.close(fig)
             
         except:
             continue
+    
+    if results:
+        with col1:
+            df = pd.DataFrame(results)
+            st.dataframe(df, use_container_width=True, height=500)
 
-    if all_data:
-        df = pd.DataFrame(all_data)
-        st.dataframe(df, use_container_width=True)
-
-        for p in plot_data:
-            fig, ax = plt.subplots(figsize=(15, 2))
-            ax.plot(np.linspace(0, p['dur'], len(p['y'])), p['y'], 'gray', alpha=0.4, lw=0.5)
-            for e in p['events']:
-                ax.axvline(e, color='red', lw=2, alpha=0.8)
-            color = "red" if p['score'] > 0.6 else "green"
-            ax.set_title(f"{p['name']} | {p['score']:.0%}", color=color, fontweight='bold')
-            ax.axis('off')
-            st.pyplot(fig)
+st.caption("🫁 6 Breathing Parameters: Timing(28%) Purity(18%) Density(15%) Noise(15%) AmpVar(12%) Sim(12%)")

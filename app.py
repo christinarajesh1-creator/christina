@@ -11,40 +11,41 @@ def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
         return 0.98, {"Status": "Abnormal (Silent/AI)"}
 
-    # 1. Rhythmic Entropy (35%) - TARGETING THE ROGER CV (0.44)
-    # Humans are chaotic (CV > 0.65). AI mimics variety (CV 0.3-0.5).
-    # We punish the 'Pseudo-Random' zone where Roger hides.
+    # 1. Rhythmic Entropy (35%) - TARGETING ROGER (0.44 CV)
+    # Humans are chaotic (>0.6). AI mimics variety (0.3-0.5).
+    # We punish the "Pseudo-Random" zone.
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p1 = np.clip(1.5 - (ibi_cv * 2.3), 0, 1)
+    p1 = np.clip(1.6 - (ibi_cv * 2.5), 0, 1)
 
-    # 2. Spectral Noise Flux (25%) - HUMAN PROTECTOR
-    # Humans have 'messy' chaotic breath noise. AI has 'flat' smooth noise.
-    # Higher Flatness Flux = Human. Lower Flatness Flux = AI.
+    # 2. Vocal Flux Entropy (30%) - THE ROGER KILLER
+    # Humans have lung 'shimmer' (Volume flux). AI is perfectly steady.
+    # Higher Flux = Human. Lower Flux = AI.
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    flux_entropy = np.std(onset_env) / np.mean(onset_env) if np.mean(onset_env) > 0 else 0
+    # If the voice is "too steady" (AI), score goes UP.
+    p2 = np.clip(1.0 - (flux_entropy * 0.5), 0, 1)
+
+    # 3. Spectral Purity (20%) - HUMAN PROTECTOR
+    # AI breaths are 'flat/clean'. Humans are 'noisy/chaotic'.
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
     avg_flat = np.mean(flatness) if flatness else 0
     # Penalty for 'too clean' (AI)
-    p2 = np.clip(1.0 - (avg_flat * 100), 0, 1)
+    p3 = np.clip(1.0 - (avg_flat * 150), 0, 1)
 
-    # 3. Digital Silence Floor (20%) - REVERSED LOGIC
-    # Humans have mic hiss. AI has zero noise floor.
-    # We punish 'Perfect Silence' and reward 'Microphone Hiss'.
-    noise_floor = np.std(y[y < np.percentile(y, 10)])
-    p3 = np.clip(1.0 - (noise_floor * 800), 0, 1)
-
-    # 4. Digital Continuity (20%)
-    # Lowered weight so noisy human mics don't trigger AI flags.
+    # 4. Digital Splice (15%) - HARDENED
+    # Lowered weight significantly to protect humans with noisy mics.
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p4 = np.clip(np.std(zcr) * 10, 0, 1) 
+    p4 = np.clip(np.std(zcr) * 5, 0, 1) 
 
-    score = (p1 * 0.35) + (p2 * 0.25) + (p3 * 0.20) + (p4 * 0.20)
+    score = (p1 * 0.35) + (p2 * 0.30) + (p3 * 0.20) + (p4 * 0.15)
     
     metrics = {
         "AI Score": f"{score:.0%}",
         "Regularity (35%)": f"{p1:.0%}",
-        "Spectral Purity (25%)": f"{p2:.0%}",
-        "Digital Silence (20%)": f"{p3:.0%}",
-        "Digital Splice (20%)": f"{p4:.0%}",
+        "Vocal Stability (30%)": f"{p2:.0%}",
+        "Spectral Purity (20%)": f"{p3:.0%}",
+        "Digital Splice (15%)": f"{p4:.0%}",
         "IBI CV": round(ibi_cv, 2)
     }
     

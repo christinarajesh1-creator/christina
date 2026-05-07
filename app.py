@@ -33,7 +33,7 @@ def analyze_audio(y, sr, filename):
         
         # 2. Breath Amplitude (15%)
         amps = [np.max(np.abs(y[int(t*sr):int((t+0.4)*sr)])) for t in events]
-        p2 = 1.0 - (np.std(amps) / np.mean(amps)) if np.mean(amps) > 0 else 1.0
+        p2 = 1.0 - (np.std(amps) / np.mean(amps)) if (len(amps) > 0 and np.mean(amps) > 0) else 1.0
         
         # 3. Breath Duration (12%)
         p3 = 0.8 if len(set([round(x, 2) for x in ibis])) < len(ibis)/2 else 0.2
@@ -42,11 +42,17 @@ def analyze_audio(y, sr, filename):
         p4 = 1.0 if len(events) < (duration / 10) else 0.1
         
         # 5. Spectral Continuity (12%)
-        zcr = librosa.feature.zero_crossing_rate(y)[0]
+        zcr = librosa.feature.zero_crossing_rate(y)
         p5 = np.clip(np.std(zcr) * 15, 0, 1)
         
         # 6. Breath Similarity (18%)
-        mfccs = [np.mean(librosa.feature.mfcc(y=y[int(t*sr):int((t+0.4)*sr)], sr=sr, n_mfcc=13), axis=1) for t in events]
+        mfccs = []
+        for t in events:
+            start, end = int(t*sr), int((t+0.4)*sr)
+            if end < len(y):
+                m = librosa.feature.mfcc(y=y[start:end], sr=sr, n_mfcc=13)
+                mfccs.append(np.mean(m, axis=1))
+        
         p6 = 0.0
         if len(mfccs) > 1:
             dists = [distance.euclidean(mfccs[i], mfccs[j]) for i in range(len(mfccs)) for j in range(i+1, len(mfccs))]
@@ -62,7 +68,8 @@ def analyze_audio(y, sr, filename):
             "sr": sr,
             "duration": duration
         }
-    except:
+    except Exception as e:
+        st.error(f"Error analyzing {filename}: {e}")
         return None
 
 st.title("🫁 PneumaForensic")
@@ -72,33 +79,35 @@ files = st.file_uploader("Batch Upload", type=['wav', 'mp3', 'm4a'], accept_mult
 if files:
     results = []
     for f in files:
-        y, sr = librosa.load(io.BytesIO(f.read()), sr=16000)
-        res = analyze_audio(y, sr, f.name)
+        # Load audio data safely
+        data, sr = librosa.load(io.BytesIO(f.read()), sr=16000)
+        res = analyze_audio(data, sr, f.name)
         if res: results.append(res)
 
-    # Summary Table
-    df = pd.DataFrame([{"File": r['filename'], "AI Score": f"{r['score']:.0%}"} for r in results])
-    st.table(df)
+    if results:
+        # Summary Table
+        df = pd.DataFrame([{"File": r['filename'], "AI Score": f"{r['score']:.0%}"} for r in results])
+        st.table(df)
 
-    # Detailed Visual Analysis
-    for r in results:
-        fig, ax = plt.subplots(figsize=(15, 3))
-        
-        # The Gray Waves
-        time_axis = np.linspace(0, r['duration'], len(r['y']))
-        ax.plot(time_axis, r['y'], color='gray', alpha=0.5, lw=0.5)
-        
-        # The Red Dashed Lines
-        for e in r['events']:
-            ax.axvline(e, color='red', linestyle='--', lw=1.5)
+        # Visual Forensic Analysis
+        for r in results:
+            fig, ax = plt.subplots(figsize=(15, 2))
             
-        color = "red" if r['score'] > 0.5 else "green"
-        ax.set_title(f"{r['filename']} | Detection Score: {r['score']:.0%}", color=color, loc='left', fontsize=12, fontweight='bold')
-        ax.set_xlim(0, r['duration'])
-        ax.set_ylim(-1, 1)
-        ax.axis('off')
-        
-        st.pyplot(fig)
-        st.divider()
+            # The Gray Waves (Audio signal)
+            time_axis = np.linspace(0, r['duration'], len(r['y']))
+            ax.plot(time_axis, r['y'], color='gray', alpha=0.4, lw=0.5)
+            
+            # The Red Dashed Lines (Breath events)
+            for e in r['events']:
+                ax.axvline(e, color='red', linestyle='--', lw=1.5, alpha=0.8)
+                
+            status_color = "red" if r['score'] > 0.6 else "green"
+            ax.set_title(f"{r['filename']} | AI Score: {r['score']:.0%}", color=status_color, loc='left', fontsize=12, fontweight='bold')
+            ax.set_xlim(0, r['duration'])
+            ax.set_ylim(-1, 1)
+            ax.axis('off')
+            
+            st.pyplot(fig)
+            st.divider()
 
-    st.download_button("Export Data", df.to_csv(index=False).encode('utf-8'), "pneuma_report.csv")
+        st.download_button("Export Results", df.to_csv(index=False).encode('utf-8'), "pneuma_report.csv")

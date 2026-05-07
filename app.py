@@ -9,38 +9,42 @@ st.set_page_config(layout="wide", page_title="PneumaForensic")
 
 def get_forensic_score(y, sr, events, duration):
     if len(events) < 3:
-        return 0.98, {"Status": "Abnormal (Zero Breaths)"}
+        return 0.98, {"Status": "Abnormal (Silent/AI)"}
 
-    # 1. Rhythmic Entropy (35%) - THE ROGER KILLER
-    # Penalizes 0.3-0.5 CV range. Humans must be > 0.65 for Green.
+    # 1. Rhythmic Entropy (35%) - TARGETING THE ROGER CV (0.44)
+    # Humans are chaotic (CV > 0.65). AI mimics variety (CV 0.3-0.5).
+    # We punish the 'Pseudo-Random' zone where Roger hides.
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    p1 = np.clip(1.4 - (ibi_cv * 2.2), 0, 1)
+    p1 = np.clip(1.5 - (ibi_cv * 2.3), 0, 1)
 
-    # 2. Spectral Flatness flux (25%) - HUMAN PROTECTOR
-    # AI breaths are 'flat/smooth'. Human breaths are 'chaotic noise'.
+    # 2. Spectral Noise Flux (25%) - HUMAN PROTECTOR
+    # Humans have 'messy' chaotic breath noise. AI has 'flat' smooth noise.
+    # Higher Flatness Flux = Human. Lower Flatness Flux = AI.
     flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
-    # AI has lower entropy. If it's too 'clean' (low flatness flux), it's AI.
-    p2 = np.clip(1.0 - (np.mean(flatness) * 60), 0, 1) if flatness else 0.5
+    avg_flat = np.mean(flatness) if flatness else 0
+    # Penalty for 'too clean' (AI)
+    p2 = np.clip(1.0 - (avg_flat * 100), 0, 1)
 
-    # 3. Digital Silence floor (20%)
+    # 3. Digital Silence Floor (20%) - REVERSED LOGIC
     # Humans have mic hiss. AI has zero noise floor.
+    # We punish 'Perfect Silence' and reward 'Microphone Hiss'.
     noise_floor = np.std(y[y < np.percentile(y, 10)])
-    p3 = np.clip(1.0 - (noise_floor * 500), 0, 1)
+    p3 = np.clip(1.0 - (noise_floor * 800), 0, 1)
 
-    # 4. Digital Continuity (20%) - DE-WEIGHTED
-    # Lowered to 20% so noisy human mics stop triggering 100% AI flags.
+    # 4. Digital Continuity (20%)
+    # Lowered weight so noisy human mics don't trigger AI flags.
     zcr = librosa.feature.zero_crossing_rate(y).flatten()
-    p4 = np.clip(np.std(zcr) * 8, 0, 1) 
+    p4 = np.clip(np.std(zcr) * 10, 0, 1) 
 
     score = (p1 * 0.35) + (p2 * 0.25) + (p3 * 0.20) + (p4 * 0.20)
     
     metrics = {
         "AI Score": f"{score:.0%}",
-        "Timing Regularity": f"{p1:.0%}",
-        "Spectral Purity": f"{p2:.0%}",
-        "Digital Silence": f"{p3:.0%}",
-        "Digital Splice": f"{p4:.0%}",
+        "Regularity (35%)": f"{p1:.0%}",
+        "Spectral Purity (25%)": f"{p2:.0%}",
+        "Digital Silence (20%)": f"{p3:.0%}",
+        "Digital Splice (20%)": f"{p4:.0%}",
         "IBI CV": round(ibi_cv, 2)
     }
     
@@ -93,5 +97,3 @@ if files:
             ax.axis('off')
             st.pyplot(fig)
             st.divider()
-
-    st.download_button("Export Results", df.to_csv(index=False).encode('utf-8'), "results.csv")

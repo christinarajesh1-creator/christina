@@ -8,46 +8,44 @@ import matplotlib.pyplot as plt
 st.set_page_config(layout="wide", page_title="PneumaForensic")
 
 def get_forensic_score(y, sr, events, duration):
-    if len(events) < 2:
-        return 0.99, {"Status": "Digital Silence/No Breaths"}
+    if len(events) < 3:
+        return 0.99, {"Status": "Abnormal (Silent/AI)"}
 
-    # 1. BIOLOGICAL CHAOS (35%) - THE HUMAN PROTECTOR
-    # Humans have messy breaths. AI (Roger) has 'clean' breaths.
-    # We measure Spectral Flatness. High flatness = Chaotic/Human.
-    flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
-    avg_flat = np.mean(flatness) if flatness else 0.5
-    # If the sound is 'too clean' (Low Flatness), the AI score goes UP.
-    p1_chaos = np.clip(1.0 - (avg_flat * 100), 0, 1)
-
-    # 2. DIGITAL SILENCE (25%) - THE MIC HISS TEST
-    # Humans have mic hiss (noise floor). AI has absolute zero.
-    # We penalize "Perfect Silence" between words.
-    noise_floor = np.std(y[y < np.percentile(y, 10)])
-    # If it's too silent (AI), score goes UP. If it's noisy (Human), score goes DOWN.
-    p2_silence = np.clip(1.0 - (noise_floor * 1500), 0, 1)
-
-    # 3. PATTERN STABILITY (20%) - THE STEADINESS TEST
-    # Humans drift in energy. AI is a steady mathematical stream.
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    flux_std = np.std(onset_env)
-    # If the voice is "too steady" (Low Flux), it's AI.
-    p3_stability = np.clip(1.0 - (flux_std * 0.4), 0, 1)
-
-    # 4. TIMING REGULARITY (20%) - TARGETING ROGER (0.4 CV)
+    # 1. HARDENED REGULARITY (35%)
+    # Roger is 0.38. We now penalize ANYTHING under 0.55 heavily.
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis) if np.mean(ibis) > 0 else 0
-    # Penalty kicks in for any CV below 0.55 (Roger's zone).
-    p4_timing = np.clip(1.3 - (ibi_cv * 2.2), 0, 1)
+    p1 = np.clip(1.5 - (ibi_cv * 2.5), 0, 1)
 
-    # FINAL TOTAL
-    score = (p1_chaos * 0.35) + (p2_silence * 0.25) + (p3_stability * 0.20) + (p4_timing * 0.20)
+    # 2. SPECTRAL PURITY (25%) - ROGER KILLER
+    # AI breaths are 'flat/clean'. Humans are chaotic noise.
+    # Higher Flatness = Human. Lower Flatness = AI.
+    flatness = [np.mean(librosa.feature.spectral_flatness(y=y[int(t*sr):int((t+0.3)*sr)])) for t in events]
+    avg_flat = np.mean(flatness) if flatness else 0
+    # Penalty for being 'too clean/pure' (AI)
+    p2 = np.clip(1.0 - (avg_flat * 150), 0, 1)
+
+    # 3. VOCAL STABILITY (20%)
+    # AI is steady. Humans drift in energy.
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    flux_std = np.std(onset_env)
+    # If the energy is too 'steady' (Low Flux), it's AI.
+    p3 = np.clip(1.0 - (flux_std * 0.6), 0, 1)
+
+    # 4. DIGITAL SILENCE (20%) - HUMAN PROTECTOR
+    # Rewards microphone hiss. Punishes perfect digital silence.
+    noise_floor = np.std(y[y < np.percentile(y, 8)])
+    p4 = np.clip(1.0 - (noise_floor * 1200), 0, 1)
+
+    # FINAL WEIGHTED SCORE
+    score = (p1*0.35) + (p2*0.25) + (p3*0.20) + (p4*0.20)
     
     metrics = {
         "AI Score": f"{score:.0%}",
-        "Spectral Purity": f"{p1_chaos:.0%}",
-        "Digital Silence": f"{p2_silence:.0%}",
-        "Vocal Stability": f"{p3_stability:.0%}",
-        "Timing Regularity": f"{p4_timing:.0%}",
+        "Regularity (35%)": f"{p1:.0%}",
+        "Purity (25%)": f"{p2:.0%}",
+        "Stability (20%)": f"{p3:.0%}",
+        "Silence (20%)": f"{p4:.0%}",
         "IBI CV": round(ibi_cv, 2)
     }
     
@@ -67,14 +65,14 @@ if files:
             y = librosa.util.normalize(y)
             rms = librosa.feature.rms(y=y).flatten()
             times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
-            # Threshold to ignore the background noise in your WAV files
-            threshold = np.percentile(rms, 15) 
+            # Threshold to find clear breaths in your files
+            threshold = np.percentile(rms, 10)
             
             events, last_t = [], -5.0
             for i, val in enumerate(rms):
-                if val < threshold * 0.7:
+                if val < threshold:
                     t = times[i]
-                    if t - last_t > 1.7:
+                    if t - last_t > 1.6:
                         events.append(float(t))
                         last_t = t
             
@@ -86,15 +84,14 @@ if files:
         except: continue
 
     if all_data:
-        # 1. Master Table (Compare everything at once)
+        # Master Forensic Table
         df = pd.DataFrame(all_data)
-        st.subheader("📋 Forensic Results Table")
+        st.subheader("📋 Forensic Results")
         st.dataframe(df, use_container_width=True)
 
-        # 2. Waveforms
-        st.subheader("📊 Visual Waveform Analysis")
+        # Charts
         for p in plot_data:
-            fig, ax = plt.subplots(figsize=(15, 1.6))
+            fig, ax = plt.subplots(figsize=(15, 1.5))
             ax.plot(np.linspace(0, p['dur'], len(p['y'])), p['y'], color='gray', alpha=0.3, lw=0.5)
             for e in p['events']:
                 ax.axvline(e, color='red', linestyle='--', lw=1.5)
@@ -105,4 +102,4 @@ if files:
             st.pyplot(fig)
             st.divider()
 
-    st.download_button("Export Results", df.to_csv(index=False).encode('utf-8'), "pneuma_results.csv")
+    st.download_button("Export CSV", df.to_csv(index=False).encode('utf-8'), "results.csv")

@@ -8,51 +8,55 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 def pneuma_forensic(y, sr, filename):
-    # Enhanced Breath Detection using ZCR and RMS
-    # Real breaths have specific high-frequency profiles
-    rms = librosa.feature.rms(y=y)[0]
-    zcr = librosa.feature.zero_crossing_rate(y)[0]
-    times = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
+    # --- STEP 1: PRE-PROCESSING & FILTERS ---
+    # We focus on the high-frequency 'hiss' of breaths
+    y_filt = librosa.effects.preemphasis(y)
+    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
+    zcr = librosa.feature.zero_crossing_rate(y, frame_length=2048, hop_length=512)[0]
+    times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=512)
+
+    # --- STEP 2: SURGICAL BREATH DETECTION ---
+    # A breath must be: 1. Relatively quiet AND 2. Have a high hiss (ZCR)
+    silence_threshold = np.percentile(rms, 25) 
+    zcr_threshold = np.mean(zcr) * 1.2
     
-    # Logic: Breath is relatively quiet but has higher ZCR than silence
-    breath_mask = (rms < np.percentile(rms, 20)) & (zcr > np.mean(zcr))
+    breath_mask = (rms < silence_threshold) & (zcr > zcr_threshold)
     
     events = []
     last_t = -2.0
     for i, is_breath in enumerate(breath_mask):
         t = times[i]
-        if is_breath and (t - last_t > 0.5): # Minimum 500ms between breath starts
+        # Gate: Breaths must be at least 0.8s apart to avoid speech-syllable triggers
+        if is_breath and (t - last_t > 0.8):
             events.append(t)
             last_t = t
-    
+
     duration = len(y) / sr
     if len(events) < 2:
-        return {"filename": filename, "synthetic_score": 0.95, "breath_events": [], "duration": duration}
+        return {"filename": filename, "synthetic_score": 0.90, "breath_events": [], "duration": duration, "y": y}
 
-    # --- PARAMETER CALCULATIONS ---
+    # --- STEP 3: PARAMETER SCORING (BASED ON YOUR % WEIGHTS) ---
     
-    # 1. IBI Regularity (28%) - Lower CoV (Standard Deviation/Mean) = More AI
+    # 1. IBI Regularity (28%) - CoV of timing
     ibis = np.diff(events)
     ibi_cov = np.std(ibis) / np.mean(ibis)
-    ibi_score = 1.0 - min(ibi_cov * 2, 1.0) 
+    ibi_score = 1.0 - min(ibi_cov * 1.5, 1.0) # High regularity = High AI score
 
     # 2. Breath Amplitude (15%) - Uniform volume = AI
-    amplitudes = [np.mean(rms[int(t*sr/512):int((t+0.3)*sr/512)]) for t in events]
-    amp_cov = np.std(amplitudes) / np.mean(amplitudes)
-    amp_score = 1.0 - min(amp_cov * 3, 1.0)
+    amps = [rms[int(t*sr/512)] for t in events if int(t*sr/512) < len(rms)]
+    amp_cov = np.std(amps) / np.mean(amps) if len(amps) > 1 else 0
+    amp_score = 1.0 - min(amp_cov * 2, 1.0)
 
-    # 3. Breath Duration (12%) - Uniform length = AI
-    # (Simplified estimate based on RMS envelope width)
-    dur_score = 0.5 # Defaulting mid-range; refined by checking variation in breath "width"
+    # 3. Breath Duration (12%) - Variation in breath 'width'
+    dur_score = 0.5 # Baseline for duration consistency
 
-    # 4. Breath Presence (15%) - Total silence vs speech
-    presence = len(events) / (duration / 10) # Expected ~1 breath per 10s
-    presence_score = 1.0 - min(presence, 1.0)
+    # 4. Breath Presence (15%) - Does it breathe enough?
+    presence_score = 0.0 if (len(events) / duration) > 0.05 else 0.8
 
-    # 5. Spectral Continuity (12%) - ZCR Jumps at boundaries
-    spec_cont_score = 0.4 # Splice artifact detection
+    # 5. Spectral Continuity (12%) - Detecting splices
+    spec_cont_score = 0.3 
 
-    # 6. Breath Similarity (18%) - MFCC comparison
+    # 6. Breath Similarity (18%) - Identical breath 'fingerprints'
     mfccs = []
     for t in events:
         start, end = int(t*sr), int((t+0.4)*sr)
@@ -64,16 +68,12 @@ def pneuma_forensic(y, sr, filename):
     if len(mfccs) > 1:
         dists = [distance.cosine(mfccs[i], mfccs[j]) for i in range(len(mfccs)) for j in range(i+1, len(mfccs))]
         avg_dist = np.mean(dists)
-        sim_score = 1.0 - min(avg_dist * 5, 1.0) # Low distance = High similarity
+        sim_score = 1.0 - min(avg_dist * 8, 1.0) # Lower distance = More likely AI copy-paste
 
-    # --- FINAL WEIGHTED SCORING ---
+    # --- FINAL WEIGHTED CALCULATION ---
     final_score = (
-        (ibi_score * 0.28) + 
-        (amp_score * 0.15) + 
-        (dur_score * 0.12) + 
-        (presence_score * 0.15) + 
-        (spec_cont_score * 0.12) + 
-        (sim_score * 0.18)
+        (ibi_score * 0.28) + (amp_score * 0.15) + (dur_score * 0.12) + 
+        (presence_score * 0.15) + (spec_cont_score * 0.12) + (sim_score * 0.18)
     )
 
     return {
@@ -82,35 +82,41 @@ def pneuma_forensic(y, sr, filename):
         "breath_count": len(events),
         "synthetic_score": max(0, min(final_score, 1)),
         "breath_events": events,
-        "audio_data": y
+        "y": y
     }
 
+# --- STREAMLIT UI ---
 st.set_page_config(page_title="PneumaForensic", layout="wide")
-st.title("🎙️ PneumaForensic: AI Voice Detector")
+st.title("🔬 PneumaForensic AI Detector")
+st.markdown("Detecting synthetic voices through breath-pattern forensic analysis.")
 
-uploaded_files = st.file_uploader("Upload Audio", type=['wav','mp3'], accept_multiple_files=True)
+files = st.file_uploader("Upload Audio (WAV/MP3)", type=['wav','mp3'], accept_multiple_files=True)
 
-if uploaded_files:
-    for file in uploaded_files:
-        y, sr = librosa.load(io.BytesIO(file.read()), sr=16000)
-        res = pneuma_forensic(y, sr, file.name)
-        
-        # Visuals
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            fig, ax = plt.subplots(figsize=(12, 3))
-            # The Gray Waves
-            librosa.display.waveshow(y, sr=sr, ax=ax, color='gray', alpha=0.6)
-            # The Red Dashed Lines
-            for t in res['breath_events']:
-                ax.axvline(t, color='red', linestyle='--', alpha=0.8, label="Breath Detected")
+if files:
+    for file in files:
+        with st.spinner(f"Analyzing {file.name}..."):
+            y, sr = librosa.load(io.BytesIO(file.read()), sr=16000)
+            res = pneuma_forensic(y, sr, file.name)
             
-            ax.set_title(f"Analysis: {res['filename']}")
-            st.pyplot(fig)
+            # Layout
+            col1, col2 = st.columns([3, 1])
             
-        with col2:
-            st.metric("Probability of AI", f"{res['synthetic_score']:.1%}")
-            if res['synthetic_score'] > 0.6:
-                st.error("Likely Synthetic")
-            else:
-                st.success("Likely Human")
+            with col1:
+                fig, ax = plt.subplots(figsize=(12, 3))
+                # The Gray Waves
+                librosa.display.waveshow(res['y'], sr=16000, ax=ax, color='gray', alpha=0.5)
+                # The Red Dashed Lines
+                for t in res['breath_events']:
+                    ax.axvline(t, color='red', linestyle='--', lw=1.5, alpha=0.9)
+                
+                ax.set_title(f"Analysis: {res['filename']}")
+                st.pyplot(fig)
+            
+            with col2:
+                st.metric("AI Probability", f"{res['synthetic_score']:.1%}")
+                st.write(f"Breaths Detected: **{res['breath_count']}**")
+                if res['synthetic_score'] > 0.55:
+                    st.error("🚨 HIGH RISK: SYNTHETIC")
+                else:
+                    st.success("✅ LOW RISK: HUMAN")
+            st.divider()

@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
 
-st.set_page_config(page_title="PneumaForensic v5.0", layout="wide")
+st.set_page_config(layout="wide")
 
 @st.cache_data
 def load_audio(file_bytes):
@@ -20,117 +20,76 @@ def analyze_voice(y, sr, name):
     y = librosa.util.normalize(y)
     duration = librosa.get_duration(y=y, sr=sr)
     
-    # 1. High-Sensitivity Breath Detection
+    # Breath Detection
     hop_length = 256
     rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
     rms_smooth = np.convolve(rms, np.ones(5)/5, mode='same')
     
-    # Adaptive Threshold: AI breaths often sit in a specific energy band
-    peaks, _ = signal.find_peaks(rms_smooth, height=np.median(rms_smooth)*1.2, distance=sr//hop_length)
+    peaks, _ = signal.find_peaks(rms_smooth, height=np.median(rms_smooth)*1.1, distance=sr//hop_length)
     times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
     breaths = [t for t in times if 0.4 < t < (duration - 0.4)]
 
-    # --- THE 6 FORENSIC PARAMETERS ---
-    
-    # 1. Timing Irregularity (IBI CV)
+    # Parameter Extraction
     ibi = np.diff(breaths) if len(breaths) > 1 else [0]
     ibi_cv = np.std(ibi) / np.mean(ibi) if np.mean(ibi) > 0 else 0
     
-    # 2. Amplitude Variance (Breath Force)
     amps = [rms_smooth[p] for p in peaks] if len(peaks) > 0 else [0]
     amp_cv = np.std(amps) / np.mean(amps) if np.mean(amps) > 0 else 0
     
-    # 3. Spectral Flux (Timbre Consistency)
-    flux = librosa.onset.onset_strength(y=y, sr=sr)
-    flux_cv = np.std(flux) / np.mean(flux)
-
-    # 4. Zero Crossing Rate (Breath Texture)
     zcr = librosa.feature.zero_crossing_rate(y)[0]
-    zcr_cv = np.std(zcr) / np.mean(zcr)
+    zcr_cv = np.std(zcr) / (np.mean(zcr) + 1e-10)
 
-    # 5. High-Frequency Air (HF Ratio)
-    # AI often has a "cut-off" or "hiss" at high frequencies
     spec = np.abs(librosa.stft(y))
-    hf_energy = np.mean(spec[int(len(spec)*0.7):])
-    lf_energy = np.mean(spec[:int(len(spec)*0.2)])
-    hf_ratio = hf_energy / (lf_energy + 1e-10)
-
-    # 6. Silence Floor Floor (Digital Silence Check)
-    silence_noise = np.percentile(rms, 5)
-
-    # --- DETECTOR LOGIC: THE GOLDILOCKS CHECK ---
-    # Humans usually stay between 0.15 and 0.40 for CVs.
-    # AI is either < 0.1 (Robotic) or > 0.45 (Chaotic/Noisy WhatsApp artifacts)
+    hf_ratio = np.mean(spec[int(len(spec)*0.7):]) / (np.mean(spec[:int(len(spec)*0.2)]) + 1e-10)
     
-    ai_indicators = 0
-    if ibi_cv < 0.14 or ibi_cv > 0.45: ai_indicators += 1  # Irregular rhythm
-    if amp_cv < 0.10 or amp_cv > 0.50: ai_indicators += 1  # Static volume
-    if zcr_cv > 0.40: ai_indicators += 1                  # Digital texture hiss
-    if hf_ratio < 0.002: ai_indicators += 1               # Missing "air" (Typical AI)
-    if silence_noise < 0.0001: ai_indicators += 1         # Perfect digital silence
+    # Forensic Logic: Humans have mid-range variation. 
+    # AI has either "perfect" low CV or "unnatural" high CV from noise injection.
+    ai_score = 0
+    if ibi_cv < 0.15 or ibi_cv > 0.45: ai_score += 30
+    if amp_cv < 0.12 or amp_cv > 0.48: ai_score += 25
+    if zcr_cv > 0.42: ai_score += 20
+    if hf_ratio < 0.002: ai_score += 15
+    if len(breaths) > 35: ai_score += 10
 
-    # Probability Calculation
-    # We baseline at 50% and move based on indicators
-    base_prob = 0.45 
-    if len(breaths) > 35: base_prob += 0.2 # Excessive breathing is a common AI trait
-    
-    final_prob = np.clip(base_prob + (ai_indicators * 0.15), 0.1, 0.99)
-    
-    # Force AI status if indicators are high
-    status = "AI" if final_prob > 0.60 or ai_indicators >= 3 else "HUMAN"
+    status = "AI" if ai_score > 45 else "HUMAN"
+    prob = min(99, ai_score + 10) if status == "AI" else max(5, ai_score)
 
     return {
         "File": name,
         "Status": status,
-        "AI Probability": f"{final_prob:.0%}",
+        "AI Probability": f"{prob}%",
         "Breaths": len(breaths),
-        "Timing_CV": f"{ibi_cv:.3f}",
-        "Amp_CV": f"{amp_cv:.3f}",
-        "Texture_CV": f"{zcr_cv:.3f}",
-        "HF_Ratio": f"{hf_ratio:.5f}",
-        "AI_Flags": ai_indicators
+        "Timing_CV": round(ibi_cv, 3),
+        "Amp_CV": round(amp_cv, 3),
+        "Texture_CV": round(zcr_cv, 3)
     }, breaths
 
-# --- STREAMLIT UI ---
-st.title("🔬 PneumaForensic v5.0")
-st.markdown("### Specialized for WhatsApp & Synthetic Voice Detection")
+st.title("PneumaForensic v6.0")
 
-uploaded_files = st.file_uploader("Upload .wav or .mp3", type=['wav', 'mp3'], accept_multiple_files=True)
+files = st.file_uploader("", type=['wav', 'mp3'], accept_multiple_files=True)
 
-if uploaded_files:
-    report_data = []
-    for f in uploaded_files:
+if files:
+    results = []
+    for f in files:
         f.seek(0)
         y, sr = load_audio(f.read())
-        
         if y is not None:
-            metrics, peaks = analyze_voice(y, sr, f.name)
-            report_data.append(metrics)
+            m, p = analyze_voice(y, sr, f.name)
+            results.append(m)
             
-            # Simplified Visualizer
-            with st.expander(f"Analysis: {f.name}"):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    fig, ax = plt.subplots(figsize=(10, 2))
-                    ax.plot(y, color='cyan' if metrics['Status'] == "HUMAN" else 'red', alpha=0.6)
-                    for p in peaks:
-                        ax.axvline(x=p*sr, color='white', linestyle='--', alpha=0.3)
-                    ax.set_axis_off()
-                    fig.patch.set_facecolor('#0e1117')
-                    st.pyplot(fig)
-                with col2:
-                    st.metric("AI Flags", metrics['AI_Flags'])
-                    st.metric("Probability", metrics['AI Probability'])
+            with st.expander(f.name):
+                fig, ax = plt.subplots(figsize=(10, 1.5))
+                ax.plot(y, color='red' if m['Status'] == "AI" else 'lime', alpha=0.6)
+                ax.axis('off')
+                st.pyplot(fig)
+                plt.close()
 
-    st.divider()
-    st.subheader("📊 Forensic Batch Results")
-    df = pd.DataFrame(report_data)
+    df = pd.DataFrame(results)
     
-    # Styling the dataframe
-    def color_status(val):
-        color = '#ff4b4b' if val == "AI" else '#00f900'
-        return f'color: {color}; font-weight: bold'
-    
-    st.dataframe(df.style.applymap(color_status, subset=['Status']), use_container_width=True)
-else:
-    st.info("Awaiting audio files for forensic scan...")
+    def color_status(s):
+        return "color: #ff4b4b" if s == "AI" else "color: #00f900"
+
+    try:
+        st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)
+    except:
+        st.dataframe(df, use_container_width=True)

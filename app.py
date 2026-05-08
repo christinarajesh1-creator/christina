@@ -16,88 +16,118 @@ def load_audio(file_bytes):
     except:
         return None, None
 
-def analyze_voice(y, sr, name):
-    y = librosa.util.normalize(y)
-    duration = librosa.get_duration(y=y, sr=sr)
+def forensic_analysis(y, sr, name):
+    y_norm = librosa.util.normalize(y)
+    duration = librosa.get_duration(y=y_norm, sr=sr)
     
-    # Breath Detection
-    hop_length = 256
-    rms = librosa.feature.rms(y=y, hop_length=hop_length)
-    rms_smooth = np.convolve(rms[0], np.ones(5)/5, mode='same')
+    # 1. Advanced Breath Detection (RMS + Peak Analysis)
+    hop = 256
+    rms = librosa.feature.rms(y=y_norm, hop_length=hop)[0]
+    rms_smooth = np.convolve(rms, np.ones(5)/5, mode='same')
     
-    peaks, _ = signal.find_peaks(rms_smooth, height=np.median(rms_smooth)*1.15, distance=sr//hop_length)
-    times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
+    # Dynamic peak finding tailored for breath envelopes
+    peaks, _ = signal.find_peaks(rms_smooth, height=np.median(rms_smooth)*1.1, distance=sr//hop)
+    
+    # Extract timing and segments
+    times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop)
     breaths = [t for t in times if 0.4 < t < (duration - 0.4)]
+    
+    # Default result for no breaths
+    if len(breaths) < 2:
+        return {
+            "File": name, "Status": "AI", "AI Prob": "98%", 
+            "IBI": "0.0", "Amp": "0.0", "Dur": "0.0", "Presence": "0%", "Continuity": "0.0", "Similarity": "0.0"
+        }, []
 
-    # Parameter Extraction
-    ibi = np.diff(breaths) if len(breaths) > 1 else np.array([])
-    ibi_cv = np.std(ibi) / np.mean(ibi) if len(ibi) > 0 else 0
-    
-    amps = [rms_smooth[p] for p in peaks] if len(peaks) > 0 else []
-    amp_cv = np.std(amps) / np.mean(amps) if len(amps) > 0 else 0
-    
-    zcr = librosa.feature.zero_crossing_rate(y)
+    # --- PARAMETER 1: IBI Regularity (28%) ---
+    ibi = np.diff(breaths)
+    ibi_cv = np.std(ibi) / np.mean(ibi)
+    # AI often has CV < 0.1 (perfect) or CV > 0.5 (random stitching)
+    ibi_score = 1.0 if (ibi_cv < 0.15 or ibi_cv > 0.45) else 0.0
+
+    # --- PARAMETER 2: Breath Amplitude (15%) ---
+    amps = [rms_smooth[p] for p in peaks]
+    amp_cv = np.std(amps) / np.mean(amps)
+    amp_score = 1.0 if (amp_cv < 0.12) else 0.0
+
+    # --- PARAMETER 3: Breath Duration (12%) ---
+    # Measure width of RMS peaks at half-height
+    widths = signal.peak_widths(rms_smooth, peaks, rel_height=0.5)[0] / (sr/hop)
+    dur_cv = np.std(widths) / np.mean(widths)
+    dur_score = 1.0 if (dur_cv < 0.15) else 0.0
+
+    # --- PARAMETER 4: Breath Presence (15%) ---
+    presence_ratio = (len(breaths) * 0.5) / duration # Assumes avg breath is 0.5s
+    # AI either lacks breaths or over-injects them (Ratio > 0.25 is sus)
+    presence_score = 1.0 if (presence_ratio < 0.02 or presence_ratio > 0.25) else 0.0
+
+    # --- PARAMETER 5: Spectral Continuity (12%) ---
+    zcr = librosa.feature.zero_crossing_rate(y_norm)[0]
     zcr_cv = np.std(zcr) / (np.mean(zcr) + 1e-10)
+    # High ZCR CV indicates digital "noise" or splice artifacts
+    cont_score = 1.0 if zcr_cv > 0.45 else 0.0
 
-    # Entropy/Flatness (Detects artificial noise injection)
-    flatness = np.mean(librosa.feature.spectral_flatness(y=y))
+    # --- PARAMETER 6: Breath Similarity (18%) ---
+    # Compare MFCCs of the first few breaths
+    mfccs = []
+    for b in breaths[:5]:
+        start = int(b * sr)
+        seg = y_norm[start:start+int(0.3*sr)]
+        if len(seg) > 0: mfccs.append(np.mean(librosa.feature.mfcc(y=seg, sr=sr, n_mfcc=13), axis=1))
     
-    # RE-CALIBRATED AI DETECTION TIGHTENING
-    ai_score = 0
-    
-    # 1. Timing Tightening (AI often hits exactly 0.18-0.22 CV to "sound human")
-    if 0.17 < ibi_cv < 0.23: ai_score += 35  # This is the "Suspect Simulation" zone
-    elif ibi_cv < 0.14 or ibi_cv > 0.48: ai_score += 40
-    
-    # 2. Amplitude Consistency
-    if 0.10 < amp_cv < 0.14: ai_score += 30  # Common AI target range
-    elif amp_cv < 0.08: ai_score += 40
-    
-    # 3. Spectral Fingerprint
-    if flatness > 0.05: ai_score += 20  # AI noise is often too "white" or "flat"
-    if zcr_cv > 0.45: ai_score += 25    # Unnatural texture jitter
-    
-    # 4. Quantity Check
-    if len(breaths) > 30: ai_score += 20  # Synthetic "over-breathing"
-    if len(breaths) < 3 and duration > 10: ai_score += 50 # Unnatural lack of breath
+    sim_val = np.mean(np.std(mfccs, axis=0)) if len(mfccs) > 1 else 0
+    # Low sim_val means breaths are "copy-pasted" clones
+    sim_score = 1.0 if (sim_val < 0.8) else 0.0
 
-    status = "AI" if ai_score > 55 else "HUMAN"
-    prob = min(99, ai_score + 15) if status == "AI" else max(1, ai_score // 2)
-
+    # --- WEIGHTED DETECTION CALCULATION ---
+    final_score = (ibi_score * 0.28) + (amp_score * 0.15) + (dur_score * 0.12) + \
+                  (presence_score * 0.15) + (cont_score * 0.12) + (sim_score * 0.18)
+    
+    status = "AI" if final_score > 0.45 else "HUMAN"
+    
     return {
-        "File": name,
-        "Status": status,
-        "AI Probability": f"{prob}%",
-        "Breaths": len(breaths),
-        "Timing_CV": round(ibi_cv, 3),
-        "Amp_CV": round(amp_cv, 3),
-        "Texture_CV": round(zcr_cv, 3),
-        "Flatness": round(flatness, 4)
+        "File": name, "Status": status, "AI Prob": f"{final_score:.0%}",
+        "IBI Reg": f"{ibi_cv:.3f}", "Amp Var": f"{amp_cv:.3f}", 
+        "Dur Var": f"{dur_cv:.3f}", "Presence": f"{presence_ratio:.1%}",
+        "ZCR Var": f"{zcr_cv:.3f}", "Sim Val": f"{sim_val:.3f}"
     }, breaths
 
-st.title("PneumaForensic v7.0 (Tightened)")
+# --- UI LOGIC ---
+st.title("🔬 PneumaForensic v8.0")
 
 files = st.file_uploader("", type=['wav', 'mp3'], accept_multiple_files=True)
 
 if files:
-    results = []
+    all_results = []
     for f in files:
         f.seek(0)
         y, sr = load_audio(f.read())
         if y is not None:
-            m, p = analyze_voice(y, sr, f.name)
-            results.append(m)
-            with st.expander(f.name):
-                fig, ax = plt.subplots(figsize=(10, 1.2))
-                ax.plot(y, color='red' if m['Status'] == "AI" else 'lime', alpha=0.5)
-                ax.axis('off')
-                st.pyplot(fig)
-                plt.close()
+            res, peaks = forensic_analysis(y, sr, f.name)
+            all_results.append(res)
+            
+            # --- GRAPHING: Gray Waves & Red Dashed Lines ---
+            fig, ax = plt.subplots(figsize=(12, 2))
+            t = np.linspace(0, len(y)/sr, len(y))
+            ax.plot(t, y, color='gray', alpha=0.6, label="Sound Waves")
+            
+            for p in peaks:
+                ax.axvline(x=p, color='red', linestyle='--', linewidth=1.5, label="Breath Detected" if p == peaks[0] else "")
+            
+            ax.set_title(f"{f.name} | Status: {res['Status']} ({res['AI Prob']})", color='white')
+            ax.set_facecolor('#0e1117')
+            fig.patch.set_facecolor('#0e1117')
+            ax.axis('off')
+            st.pyplot(fig)
+            plt.close()
 
-    df = pd.DataFrame(results)
-    def color_status(s): return "color: #ff4b4b" if s == "AI" else "color: #00f900"
+    st.subheader("Forensic Parameter Breakdown")
+    df = pd.DataFrame(all_results)
+    
+    def highlight(s):
+        return "color: #ff4b4b" if s == "AI" else "color: #00f900"
     
     try:
-        st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)
+        st.dataframe(df.style.map(highlight, subset=['Status']), use_container_width=True)
     except:
         st.dataframe(df, use_container_width=True)

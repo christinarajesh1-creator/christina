@@ -8,61 +8,60 @@ from scipy.signal import find_peaks
 
 st.set_page_config(layout="wide")
 
-def process_forensic(file):
+def forensic_breath_detect(file):
     try:
         y, sr = librosa.load(io.BytesIO(file.read()), sr=16000, mono=True)
         
-        # 1. Noise Gate: Strip background hum to find the 'real' breaths
-        S_full, phase = librosa.magphase(librosa.stft(y))
-        noise_floor = np.median(S_full, axis=1, keepdims=True)
-        S_clean = S_full - (noise_floor * 1.5) # Spectral subtraction
-        y_clean = librosa.istft(S_clean * phase)
+        # 1. CLEAN: Remove room rumble and flatten noise
+        y_filt = librosa.effects.preemphasis(y)
+        rms = librosa.feature.rms(y=y_filt, frame_length=1024, hop_length=256)[0]
+        times = librosa.frames_to_time(rms, sr=sr)
         
-        # 2. Advanced Breath Search (Using cleaned signal)
-        rms = librosa.feature.rms(y=y_clean)[0]
-        # Look for the 'hiss' frequency where breaths live (2kHz - 5kHz)
-        y_filt = librosa.effects.preemphasis(y_clean)
-        peaks, _ = find_peaks(rms, height=np.mean(rms)*0.5, distance=sr//3)
-        events = librosa.frames_to_time(peaks, sr=sr)
+        # 2. SENSITIVE SEARCH: Find drops in energy (breaths)
+        # We use a rolling mean to find local energy dips
+        rolling_noise = pd.Series(rms).rolling(window=15, center=True).mean().fillna(np.mean(rms))
+        breath_candidates = (rms < rolling_noise * 0.8).astype(float)
+        
+        peaks, _ = find_peaks(breath_candidates, height=0.3, distance=sr//4, prominence=0.1)
+        events = [times[p] for p in peaks if 1.0 < times[p] < (len(y)/sr - 1.0)]
 
-        # 3. Research Parameters
-        # AI often has 'Identical' breaths. Humans have unique ones.
-        if len(events) >= 2:
+        # 3. RESEARCH METRICS
+        breath_count = len(events)
+        if breath_count >= 2:
             ibis = np.diff(events)
-            regularity = np.std(ibis) / np.mean(ibis)
-            # High regularity (low score) = AI. High variation = Human.
-            ai_score = 0.8 if regularity < 0.2 else 0.3
+            reg_score = np.std(ibis) / np.mean(ibis)
+            # Human = Higher regularity variation (> 0.25)
+            ai_score = 0.2 + (0.5 if reg_score < 0.25 else 0.05)
         else:
-            regularity = 0
-            ai_score = 0.85 # Default if no breaths found
+            reg_score = 0
+            ai_score = 0.85 # Flag as AI if 0-1 breaths found
 
         return {
-            "Filename": file.name,
-            "AI_Prob": ai_score,
-            "Breaths_Found": len(events),
-            "Reg_Score": round(regularity, 3),
-            "Status": "🤖 AI" if ai_score > 0.5 else "👤 HUMAN",
-            "y": y, "ev": events
+            "Filename": file.name, "AI_Score": ai_score, "Status": "🤖 AI" if ai_score > 0.5 else "👤 HUMAN",
+            "Breaths": breath_count, "IBI_Var": round(reg_score, 3), "y": y, "ev": events
         }
     except: return None
 
-st.title("Forensic Analysis v7.0 (Noise-Filtered)")
-uploaded = st.file_uploader("Upload", accept_multiple_files=True)
+st.title("Forensic Breath Analyzer v9.0")
+uploaded = st.file_uploader("Upload Batch", accept_multiple_files=True)
 
 if uploaded:
-    data = [process_forensic(f) for f in uploaded if f]
+    data = [forensic_breath_detect(f) for f in uploaded if f]
     df = pd.DataFrame([r for r in data if r])
     
     if not df.empty:
-        st.dataframe(df[["Filename", "AI_Prob", "Status", "Breaths_Found", "Reg_Score"]], use_container_width=True)
+        # 1. Parameter Table
+        st.dataframe(df[["Filename", "AI_Score", "Status", "Breaths", "IBI_Var"]], use_container_width=True)
         
-        # Graphs to prove it's finding them
+        # 2. Visual Proof (Graphs)
+        st.subheader("Temporal Breath Markers")
         cols = st.columns(2)
         for i, res in enumerate(data[:4]):
             with cols[i%2]:
-                fig, ax = plt.subplots(figsize=(10,3))
-                ax.plot(res['y'], color='gray', alpha=0.4)
+                fig, ax = plt.subplots(figsize=(10, 3), facecolor='#111')
+                ax.plot(res['y'], color='white', alpha=0.3, lw=0.5)
                 for p in res['ev']:
-                    ax.axvline(p*16000, color='lime', lw=2, label='Breath')
-                ax.set_title(f"{res['Filename']}: {res['Breaths_Found']} Breaths")
+                    ax.axvline(p*16000, color='#00FF00', lw=2, label='Breath')
+                ax.set_facecolor('black')
+                ax.set_title(f"{res['Filename']}: {res['Breaths']} Breaths Found", color='white')
                 st.pyplot(fig)

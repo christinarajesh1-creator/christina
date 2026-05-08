@@ -10,169 +10,168 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(layout="wide")
 
-@st.cache_data
-def detect_breaths_simple(file_bytes, filename):
-    """SIMPLEST breath detection that actually works"""
-    try:
-        # Load raw
-        y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, mono=True)
-        duration = len(y) / sr
-        
-        st.write(f"DEBUG: {filename} - duration: {duration:.2f}s, samples: {len(y)}")
-        
-        # Basic RMS - NO fancy filtering
-        hop_length = 512
-        frame_length = 1024
-        rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
-        times = librosa.frames_to_time(rms, sr=sr, hop_length=hop_length)
-        
-        # SIMPLE moving average smooth
-        window = 15
-        smooth_rms = np.convolve(rms, np.ones(window)/window, mode='same')
-        
-        # **SUPER SIMPLE BREATH DETECTION**
-        # Just find where RMS drops below 60% of local smooth
-        breath_threshold = 0.6
-        breath_mask = rms < (smooth_rms * breath_threshold)
-        
-        # Count consecutive low energy frames as single breath
-        breath_regions = []
-        in_breath = False
-        breath_start = 0
-        
-        for i in range(len(breath_mask)):
-            if breath_mask[i] and not in_breath:
-                in_breath = True
-                breath_start = i
-            elif not breath_mask[i] and in_breath:
-                in_breath = False
-                # Minimum 8 frames (~0.16s) to count as breath
-                if i - breath_start > 8:
-                    breath_regions.append((breath_start, i))
-        
-        # Convert to times
-        breath_times = [(times[start], times[end]) for start, end in breath_regions]
-        breath_count = len(breath_times)
-        
-        # VERY CONSERVATIVE AI SCORING
-        if breath_count >= 4:
-            ai_score = 0.2  # Many breaths = human
-            status = "👤 HUMAN"
-        elif breath_count >= 2:
-            ai_score = 0.5
-            status = "❓ UNCLEAR"
-        else:
-            ai_score = 0.85
-            status = "🤖 AI"
-        
-        return {
-            'filename': filename,
-            'duration': f"{duration:.2f}s",
-            'samples': len(y),
-            'rms_frames': len(rms),
-            'breaths': breath_count,
-            'ai_score': ai_score,
-            'status': status,
-            'threshold': breath_threshold,
-            'times': times,
-            'rms': rms,
-            'smooth_rms': smooth_rms,
-            'breath_mask': breath_mask,
-            'breath_regions': breath_regions,
-            'breath_times': breath_times,
-            'waveform': y[:60000]  # First 2.7s
-        }
-    except Exception as e:
-        st.error(f"Error {filename}: {e}")
-        return None
+HOP_LENGTH = 512
+SR = 22050
 
-st.title("🔬 Breath Detector - DEBUG VERSION")
-st.markdown("**Finding why breaths aren't detected**")
-
-tab1, tab2, tab3 = st.tabs(["Upload", "Results", "Debug Plots"])
-
-with tab1:
-    uploaded_files = st.file_uploader(
-        "Upload ONE audio file for debugging",
-        type=['wav', 'mp3', 'm4a', 'flac'],
-        accept_multiple_files=False
-    )
+def detect_breaths_batch(files):
+    """Batch breath detection - ultra simple"""
+    results = []
     
-    if uploaded_files:
-        result = detect_breaths_simple(uploaded_files.read(), uploaded_files.name)
-        if result:
-            st.session_state.result = result
-            st.success("Analysis complete! Check Results tab")
+    for filename, file_bytes in files:
+        try:
+            y, sr = librosa.load(io.BytesIO(file_bytes), sr=SR, mono=True)
+            duration = len(y) / sr
+            
+            # Raw RMS
+            rms = librosa.feature.rms(y=y, frame_length=1024, hop_length=HOP_LENGTH)[0]
+            times = librosa.frames_to_time(rms, sr=SR, hop_length=HOP_LENGTH)
+            
+            # Simple smooth
+            smooth_rms = np.convolve(rms, np.ones(15)/15, mode='same')
+            
+            # Breath mask: RMS < 65% smooth
+            breath_mask = rms < smooth_rms * 0.65
+            
+            # Find breath regions
+            breath_regions = []
+            i = 0
+            while i < len(breath_mask):
+                if breath_mask[i]:
+                    start = i
+                    while i < len(breath_mask) and breath_mask[i]:
+                        i += 1
+                    end = i
+                    # Min 10 frames = ~0.23s
+                    if end - start >= 10:
+                        breath_regions.append((times[start], times[end-1]))
+                else:
+                    i += 1
+            
+            breath_count = len(breath_regions)
+            
+            # SIMPLE SCORING
+            if breath_count >= 5:
+                ai_score = 0.15
+                status = "👤 HUMAN"
+            elif breath_count >= 3:
+                ai_score = 0.45
+                status = "👤 HUMAN"
+            elif breath_count >= 1:
+                ai_score = 0.70
+                status = "🤖 AI"
+            else:
+                ai_score = 0.92
+                status = "🤖 AI"
+            
+            results.append({
+                'filename': filename,
+                'duration_s': round(duration, 2),
+                'breaths': breath_count,
+                'ai_score': round(ai_score, 3),
+                'status': status,
+                'waveform': y[:60000],
+                'rms': rms[:300],
+                'smooth_rms': smooth_rms[:300],
+                'times': times[:300],
+                'breath_times': [t[0] for t in breath_regions],
+                'breath_regions': breath_regions
+            })
+            
+        except:
+            results.append({
+                'filename': filename,
+                'duration_s': 0,
+                'breaths': 0,
+                'ai_score': 1.0,
+                'status': 'ERROR',
+                'waveform': np.array([]),
+                'rms': np.array([]),
+                'times': np.array([]),
+                'breath_times': [],
+                'breath_regions': []
+            })
+    
+    return results
 
-with tab2:
-    if 'result' in st.session_state:
-        result = st.session_state.result
-        df = pd.DataFrame([result])
-        
-        st.subheader("Detection Results")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Status", result['status'])
-        col2.metric("Breaths Found", result['breaths'])
-        col3.metric("AI Score", f"{result['ai_score']:.2f}")
-        col4.metric("Duration", result['duration'])
-        
-        st.dataframe(df[['filename', 'breaths', 'ai_score', 'status', 'threshold']], 
-                    use_container_width=True)
+st.title("🔬 Batch Breath Detector")
+st.markdown("**Upload multiple files - detects ALL breaths**")
 
-with tab3:
-    if 'result' in st.session_state:
-        result = st.session_state.result
-        
-        st.subheader("DEBUG: Raw Signal")
-        fig_debug, axes = plt.subplots(4, 1, figsize=(14, 16))
-        
-        # 1. Raw waveform
-        axes[0].plot(result['waveform'])
-        axes[0].set_title("Raw Waveform (first 2.7s)")
-        axes[0].set_ylabel("Amplitude")
-        
-        # 2. RMS envelope
-        axes[1].plot(result['times'][:300], result['rms'][:300], 'blue', label='Raw RMS')
-        axes[1].plot(result['times'][:300], result['smooth_rms'][:300], 'red', label='Smooth RMS')
-        axes[1].set_title("RMS Energy Envelope")
-        axes[1].set_ylabel("RMS")
-        axes[1].legend()
-        
-        # 3. Breath mask
-        mask_times = result['times'][:300]
-        mask_data = result['breath_mask'][:300]
-        axes[2].plot(mask_times, mask_data, 'green', linewidth=2)
-        axes[2].axhline(y=0.6, color='red', linestyle='--', label='Threshold')
-        axes[2].set_title("Breath Probability (RMS < 60% smooth)")
-        axes[2].set_ylabel("Probability")
-        axes[2].set_ylim(-0.1, 1.1)
-        axes[2].legend()
-        
-        # 4. Detected breaths
-        axes[3].plot(result['times'][:300], result['rms'][:300], 'blue', alpha=0.7)
-        axes[3].plot(result['times'][:300], result['smooth_rms'][:300], 'red', alpha=0.7)
-        
-        # Mark breath regions
-        for start_frame, end_frame in result['breath_regions'][:300]:
-            if start_frame < 300 and end_frame < 300:
-                axes[3].axvspan(start_frame * hop_length/sr, end_frame * hop_length/sr, 
-                               alpha=0.4, color='orange', label='Breath' if start_frame == result['breath_regions'][0][0] else "")
-        
-        axes[3].set_title("DETECTED BREATHS (orange regions)")
-        axes[3].set_xlabel("Time (s)")
-        axes[3].set_ylabel("RMS")
-        axes[3].legend()
-        
-        plt.tight_layout()
-        st.pyplot(fig_debug)
-        
-        st.subheader("DEBUG INFO")
-        st.json({
-            'total_frames': len(result['rms']),
-            'breath_threshold': result['threshold'],
-            'min_breath_frames': 8,
-            'breath_regions_found': len(result['breath_regions']),
-            'sample_rate': 22050,
-            'hop_length': 512
-        })
+uploaded_files = st.file_uploader(
+    "Choose audio files", 
+    type=['wav','mp3','m4a','flac','ogg'], 
+    accept_multiple_files=True
+)
 
+if uploaded_files:
+    # Prepare file list
+    file_list = [(f.name, f.read()) for f in uploaded_files]
+    
+    progress = st.progress(0)
+    results = detect_breaths_batch(file_list)
+    progress.progress(1.0)
+    
+    df = pd.DataFrame(results)
+    
+    # RESULTS TABLE
+    st.subheader("📊 Batch Results")
+    st.dataframe(df[['filename', 'duration_s', 'breaths', 'status', 'ai_score']], 
+                use_container_width=True, hide_index=False)
+    
+    # SUMMARY
+    human_count = len(df[df['status'] == '👤 HUMAN'])
+    ai_count = len(df[df['status'] == '🤖 AI'])
+    col1, col2 = st.columns(2)
+    col1.metric("👤 Human", human_count)
+    col2.metric("🤖 AI", ai_count)
+    
+    # VISUALIZATIONS - FIRST 6 FILES
+    st.subheader("📈 Breath Visualization")
+    cols = st.columns(3)
+    
+    for i, result in enumerate(results[:6]):
+        if len(result['breath_regions']) == 0:
+            continue
+            
+        with cols[i%3]:
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+            
+            # Waveform with breaths
+            ax1.plot(result['waveform'], 'gray', alpha=0.6, linewidth=0.8)
+            color = 'green' if result['status'] == '👤 HUMAN' else 'red'
+            for start_t, end_t in result['breath_regions'][:8]:
+                if start_t * SR < len(result['waveform']):
+                    ax1.axvspan(start_t*SR, min(end_t*SR, len(result['waveform'])), 
+                               color=color, alpha=0.4)
+            ax1.set_title(f"{result['filename'][:40]}")
+            ax1.set_ylabel("Amplitude")
+            
+            # RMS with breaths
+            ax2.plot(result['times'], result['rms'], 'cyan', linewidth=1.5, label='RMS')
+            ax2.plot(result['times'], result['smooth_rms'], 'orange', linewidth=1, label='Smooth')
+            for start_t, end_t in result['breath_regions'][:8]:
+                if start_t < result['times'][-1]:
+                    ax2.axvspan(start_t, min(end_t, result['times'][-1]), 
+                               color=color, alpha=0.5)
+            ax2.set_title(f"{result['status']} | {result['breaths']} breaths | Score: {result['ai_score']}")
+            ax2.set_xlabel("Time (s)")
+            ax2.set_ylabel("RMS Energy")
+            ax2.legend()
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+    
+    st.success(f"✅ Analyzed {len(results)} files")
+
+# SIMPLE HOWTO
+with st.expander("ℹ️ How it works"):
+    st.markdown("""
+    **Ultra-simple algorithm:**
+    
+    1. Compute RMS energy envelope
+    2. Smooth with 15-frame average  
+    3. Find regions where RMS < 65% smooth
+    4. Regions >0.23s = breaths
+    5. 3+ breaths = human voice
+    
+    **No complex filtering - pure energy drops**
+    """)

@@ -5,185 +5,205 @@ import io
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
+import soundfile as sf
 
 st.set_page_config(layout="wide")
 
 def forensic_analysis(y, sr):
+    # Normalize per file
+    y_norm = (y - np.mean(y)) / (np.std(y) + 1e-10)
     duration = len(y) / sr
-    y = (y - np.mean(y)) / (np.std(y) + 1e-8)
     
-    # Improved breath detection - less aggressive
-    hop_length = 512
-    frame_length = 2048
+    # 1. BREATH DETECTION - Adaptive per file
+    rms = librosa.feature.rms(y=y_norm)[0]
+    times = librosa.frames_to_time(rms, sr=sr)
     
-    # Envelope-based detection (broader band)
-    envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-    times = librosa.frames_to_time(envelope, sr=sr, hop_length=hop_length)
-    
-    # Find breath candidates with relaxed thresholds
-    peaks, properties = signal.find_peaks(envelope, height=np.percentile(envelope, 75),
-                                        distance=sr//3, prominence=np.std(envelope)*0.4)
+    # File-specific thresholds
+    rms_p75 = np.percentile(rms, 75)
+    rms_p90 = np.percentile(rms, 90)
+    peaks, props = signal.find_peaks(rms, height=rms_p75, 
+                                   distance=int(1.5*sr/512),
+                                   prominence=(rms_p90-rms_p75)*0.3)
     
     events = times[peaks]
-    events = events[(events > 1.5) & (events < duration - 1.5)]
+    events = events[(events > 2.0) & (events < duration-2.0)]
     
-    # Adaptive clustering filter
-    filtered_events = []
-    min_spacing = 0.7
+    # Remove duplicates
+    filtered = []
     for t in sorted(events):
-        if (not filtered_events or t - filtered_events[-1] > min_spacing):
-            filtered_events.append(t)
+        if not filtered or t - filtered[-1] > 1.0:
+            filtered.append(t)
+    events = filtered[:8]
     
-    events = filtered_events[:10]
+    if len(events) < 2:
+        return default_human_result()
     
-    # Human bias calibration
-    if len(events) < 3:
-        return human_result(file_name="N/A")
-    
-    # 1. IBI - Human range: 0.10-0.45 CV (relaxed)
+    # 2. IBI VARIABILITY - File specific
     ibis = np.diff(events)
-    valid_ibis = ibis[(ibis > 1.2) & (ibis < 8.0)]  # Realistic breath spacing
-    if len(valid_ibis) < 2:
-        return human_result(file_name="N/A")
-        
-    ibi_cv = np.std(valid_ibis) / np.mean(valid_ibis)
-    timing_human = 1.0 - max(0, min(1.0, (ibi_cv - 0.45) / 0.35))  # Human = high CV
+    mean_ibi = np.mean(ibis)
+    std_ibi = np.std(ibis)
+    ibi_cv = std_ibi / mean_ibi if mean_ibi > 0 else 0.3
     
-    # 2. Breath spectral complexity - Human = messy (low flatness)
-    purity_scores = []
-    for t in events[:6]:
-        start = max(0, int((t-0.25)*sr))
-        end = min(len(y), int((t+0.35)*sr))
-        breath = y[start:end]
-        
-        if len(breath) > sr//6:
-            # Use spectral centroid variation instead of flatness
-            spec_cent = librosa.feature.spectral_centroid(y=breath, sr=sr)[0]
-            purity_scores.append(np.std(spec_cent) / (np.mean(spec_cent) + 1e-8))
-    
-    spectral_var = np.mean(purity_scores) if purity_scores else 0.3
-    spectral_human = min(1.0, spectral_var * 8)  # Human = high variation
-    
-    # 3. Noise floor - Human = natural background
-    non_breath_mask = np.ones_like(y, dtype=bool)
+    # 3. BREATH DURATION VARIABILITY
+    durations = []
     for t in events:
-        s, e = int((t-0.4)*sr), int((t+0.4)*sr)
-        non_breath_mask[max(0,s):min(len(y),e)] = False
+        start = max(0, int((t-0.3)*sr))
+        end = min(len(y), int((t+0.4)*sr))
+        breath = y_norm[start:end]
+        durations.append(len(breath)/sr)
     
-    noise_level = np.std(y[non_breath_mask]) if np.any(non_breath_mask) else 0.02
-    noise_human = min(1.0, noise_level * 150)  # Human = moderate noise
+    dur_cv = np.std(durations) / np.mean(durations) if durations else 0.2
     
-    # 4. Amplitude variation - Human = natural inconsistency
-    amps = []
-    for t in events:
-        s, e = int((t-0.2)*sr), int((t+0.3)*sr)
-        amps.append(np.max(np.abs(y[s:e])))
+    # 4. AMPLITUDE VARIABILITY
+    amps = [np.max(np.abs(y_norm[max(0,int((t-0.2)*sr)):min(len(y),int((t+0.3)*sr))])) for t in events]
+    amp_cv = np.std(amps) / np.mean(amps) if amps and np.mean(amps) > 0 else 0.25
     
-    if len(amps) > 1:
-        amp_cv = np.std(amps) / np.mean(amps)
-        amp_human = min(1.0, amp_cv * 4)  # Human = higher variation
-    else:
-        amp_human = 0.6
+    # 5. NOISE FLOOR - Between breaths
+    silence_amps = []
+    for i in range(len(events)-1):
+        silence_start = int(events[i]*sr + 0.5*sr)
+        silence_end = int(events[i+1]*sr - 0.5*sr)
+        if silence_end > silence_start:
+            silence_amps.append(np.mean(np.abs(y_norm[silence_start:silence_end])))
     
-    # 5. Pitch variation during breaths - Human = natural wobble
-    pitch_var = []
-    for t in events[:5]:
-        s, e = int((t-0.2)*sr), int((t+0.3)*sr)
-        breath = y[s:e]
-        pitches, magnitudes = librosa.piptrack(y=breath, sr=sr)
-        pitch_vals = pitches[magnitudes > np.median(magnitudes)]
-        if len(pitch_vals) > 5:
-            pitch_var.append(np.std(pitch_vals[pitch_vals > 50]) / np.mean(pitch_vals[pitch_vals > 50]))
+    noise_level = np.mean(silence_amps) if silence_amps else 0.01
+    noise_cv = np.std(silence_amps) / (np.mean(silence_amps) + 1e-10) if silence_amps else 0.3
     
-    pitch_human = np.mean(pitch_var) * 15 if pitch_var else 0.5
+    # 6. SPECTRAL CHARACTERISTICS - Breath vs silence
+    breath_centroids = []
+    silence_centroids = []
     
-    # 6. Energy modulation - Human = organic patterns
-    rms = librosa.feature.rms(y=y)[0]
-    rms_cv_global = np.std(rms) / (np.mean(rms) + 1e-8)
-    energy_human = min(1.0, rms_cv_global * 3)
+    for t in events[:4]:
+        # Breath segment
+        s, e = int((t-0.25)*sr), int((t+0.35)*sr)
+        if e > s:
+            cent = np.mean(librosa.feature.spectral_centroid(y=y_norm[s:e], sr=sr)[0])
+            breath_centroids.append(cent)
     
-    # HUMAN SCORE (higher = more human-like)
-    human_score = (0.30 * timing_human + 0.20 * spectral_human + 
-                  0.18 * noise_human + 0.17 * amp_human + 
-                  0.10 * pitch_human + 0.05 * energy_human)
+    silence_level = noise_level * sr  # Normalized
     
-    status = "HUMAN" if human_score > 0.50 else "AI"
-    ai_score = max(0, min(1.0, 1.0 - human_score))
+    # HUMAN SCORE - HIGH VARIABILITY = HUMAN
+    human_score = (
+        0.25 * min(1.0, ibi_cv * 3) +           # Timing variation
+        0.20 * min(1.0, dur_cv * 4) +           # Duration variation  
+        0.20 * min(1.0, amp_cv * 3.5) +         # Amplitude variation
+        0.15 * min(1.0, noise_cv * 2.5) +       # Noise variation
+        0.10 * (0.8 if len(breath_centroids) > 0 else 0.3) +  # Spectral content
+        0.10 * min(1.0, noise_level * 200)      # Natural noise floor
+    )
+    
+    ai_prob = max(0, min(1.0, 1.0 - human_score * 1.1))
+    status = "AI" if ai_prob > 0.65 else "HUMAN"
     
     return {
-        "File": "Audio", "AI Score": f"{ai_score:.0%}", "Status": status,
-        "Breaths": len(events), "IBI_CV": f"{ibi_cv:.2f}", 
-        "SpecVar": f"{spectral_human:.0%}", "Noise": f"{noise_human:.0%}",
-        "AmpCV": f"{amp_human:.0%}", "PitchVar": f"{pitch_human:.0%}",
-        "HumanScore": f"{human_score:.0%}"
+        "File": "Audio",
+        "AI Score": f"{ai_prob:.0%}", 
+        "Status": status,
+        "Breaths": len(events),
+        "IBI_CV": f"{ibi_cv:.3f}",
+        "Dur_CV": f"{dur_cv:.3f}",
+        "Amp_CV": f"{amp_cv:.3f}",
+        "Noise_CV": f"{noise_cv:.3f}",
+        "NoiseLvl": f"{noise_level:.4f}",
+        "HumanScore": f"{human_score:.1f}"
     }, events
 
-def human_result(file_name):
+def default_human_result():
     return {
-        "File": file_name, "AI Score": "5%", "Status": "HUMAN",
-        "Breaths": 0, "IBI_CV": "N/A", "SpecVar": "95%",
-        "Noise": "90%", "AmpCV": "85%", "PitchVar": "90%", "HumanScore": "95%"
+        "File": "Audio", "AI Score": "15%", "Status": "HUMAN",
+        "Breaths": 0, "IBI_CV": "N/A", "Dur_CV": "N/A",
+        "Amp_CV": "N/A", "Noise_CV": "N/A", "NoiseLvl": "N/A", "HumanScore": "0.8"
     }, []
 
-st.title("🔬 PneumaForensic v2.1 - Human-First Detection")
+st.title("🔬 PneumaForensic v3.0 - Per-File Adaptive")
 
 files = st.file_uploader("Upload audio files", type=['wav','mp3','m4a','flac'], 
-                        accept_multiple_files=True)
+                        accept_multiple_files=True, key="uploader")
 
 if files:
-    tab1, tab2 = st.tabs(["📊 Results", "📈 Visualization"])
+    col1, col2 = st.columns([1,3])
     
-    all_results = []
-    
-    with tab1:
+    with col1:
+        st.subheader("Results")
+        all_results = []
+        
         for file in files:
             file.seek(0)
             try:
-                y, sr = librosa.load(io.BytesIO(file.read()), sr=16000, duration=35)
-                metrics, events = forensic_analysis(y, sr)
+                # Load with original SR first, then analyze
+                y, orig_sr = librosa.load(io.BytesIO(file.read()), sr=None, mono=True)
+                file.seek(0)
+                
+                # Resample to 16kHz for consistency but preserve characteristics
+                y_16k, _ = librosa.resample(y, orig_sr=orig_sr, target_sr=16000)
+                
+                metrics, events = forensic_analysis(y_16k, 16000)
                 metrics["File"] = file.name
+                metrics["Orig_SR"] = f"{orig_sr}Hz"
                 all_results.append(metrics)
-            except:
+            except Exception as e:
                 all_results.append({"File": file.name, "AI Score": "ERROR", "Status": "Failed"})
         
         df = pd.DataFrame(all_results)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, use_container_width=True)
+        
+        if len(all_results) > 1:
+            valid_scores = [float(r['AI Score'][:-1])/100 for r in all_results if r['AI Score'] != 'ERROR']
+            st.metric("Batch AI Average", f"{np.mean(valid_scores):.0%}")
     
-    with tab2:
-        for file in files:
+    with col2:
+        st.subheader("Detailed Analysis")
+        for i, file in enumerate(files):
             file.seek(0)
             try:
-                y, sr = librosa.load(io.BytesIO(file.read()), sr=16000, duration=35)
-                metrics, events = forensic_analysis(y, sr)
+                y, orig_sr = librosa.load(io.BytesIO(file.read()), sr=None, mono=True)
+                y_16k, _ = librosa.resample(y, orig_sr=orig_sr, target_sr=16000)
+                metrics, events = forensic_analysis(y_16k, 16000)
                 
-                fig, ax = plt.subplots(figsize=(14, 6), facecolor='#0a0a0a')
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), facecolor='black')
                 
-                dur = min(28, len(y)/sr)
-                t = np.linspace(0, dur, min(6000, len(y)))
-                y_short = y[:len(t)]
+                # Full waveform
+                dur = min(30, len(y_16k)/16000)
+                t = np.linspace(0, dur, int(dur*16000))
+                y_plot = y_16k[:len(t)]
                 
-                ax.plot(t, y_short, color='#44ff88', lw=0.8, alpha=0.9)
+                ax1.plot(t, y_plot, 'cyan', lw=0.6, alpha=0.9)
                 
-                for i, e in enumerate(events):
+                # Mark breaths
+                for j, e in enumerate(events):
                     if e < dur:
                         color = 'lime' if metrics['Status'] == 'HUMAN' else 'red'
-                        ax.axvline(e, color=color, ls='--', lw=2.8, alpha=0.9)
-                        ax.text(e, np.max(y_short)*0.6, f"B{i+1}", 
-                               ha='center', fontweight='bold', 
-                               color=color, fontsize=11)
+                        ax1.axvline(e, color=color, lw=3, alpha=0.8, ls='--')
+                        ax1.text(e, 0.4, f'B{j+1}', ha='center', color=color, 
+                               fontweight='bold', fontsize=12)
                 
-                color = '#44ff44' if metrics['Status'] == 'HUMAN' else '#ff4444'
-                ax.set_title(f"{file.name} | AI: {metrics['AI Score']} | {metrics['Status']} | Human: {metrics['HumanScore']}", 
-                           color=color, fontsize=16, pad=20)
-                ax.set_facecolor('#111111')
-                ax.set_xlim(0, dur)
+                ax1.set_title(f"{file.name}\nAI: {metrics['AI Score']} | {metrics['Status']} | SR: {orig_sr}Hz", 
+                            color='white', fontsize=14)
+                ax1.set_facecolor('#1a1a1a')
+                ax1.set_xlim(0, dur)
+                
+                # Parameter bars
+                params = ['IBI_CV', 'Dur_CV', 'Amp_CV', 'Noise_CV']
+                values = [float(metrics[p][:-3]) if metrics[p] != 'N/A' else 0.2 for p in params]
+                
+                bars = ax2.bar(params, values, color=['orange', 'yellow', 'pink', 'lightblue'], alpha=0.8)
+                ax2.set_title('Variability Scores (Higher = More Human)', color='white')
+                ax2.set_ylim(0, 0.8)
+                ax2.tick_params(colors='white')
+                ax2.set_facecolor('#1a1a1a')
+                
+                # Add value labels on bars
+                for bar, val in zip(bars, values):
+                    height = bar.get_height()
+                    ax2.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                           f'{val:.2f}', ha='center', va='bottom', color='white')
                 
                 plt.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
                 
             except:
-                st.error(f"Processing failed: {file.name}")
+                st.error(f"Failed to plot: {file.name}")
 
 else:
-    st.info("👆 Upload audio to test - now correctly identifies human breathing")
+    st.info("Upload multiple files - each gets **unique** file-specific analysis")

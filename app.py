@@ -62,26 +62,30 @@ def analyze_breath_features(events, y, sr):
     scores = {}
     breath_count = len(events)
     
-    # 1. COUNT (15%)
-    count_score = 0.15 if 3 <= breath_count <= 12 else 0.75
-    scores['Count'] = count_score
+    # Always initialize all 6 parameters
+    scores = {
+        'Count': 0.15 if 3 <= breath_count <= 12 else 0.75,
+        'IBI': 0.0,
+        'Amp': 0.0,
+        'Dur': 0.0,
+        'Spec': 0.45,
+        'ZCR': 0.4
+    }
     
     if breath_count < 2:
-        for key in ['IBI', 'Amp', 'Dur', 'Spec', 'ZCR', 'Sim']:
+        for key in ['IBI', 'Amp', 'Dur', 'Spec', 'ZCR']:
             scores[key] = 0.7
         return scores
     
-    # 2. IBI REGULARITY (25%) - AI too regular or erratic
+    # 2. IBI REGULARITY (25%)
     ibis = np.diff(events)
     ibi_cv = np.std(ibis) / np.mean(ibis)
-    ibi_ai = 0.85 if ibi_cv < 0.22 or ibi_cv > 1.1 else 0.25
-    scores['IBI'] = ibi_ai
+    scores['IBI'] = 0.85 if ibi_cv < 0.22 or ibi_cv > 1.1 else 0.25
     
-    # 3. AMPLITUDE VARIATION (20%) - AI too consistent
+    # 3. AMPLITUDE VARIATION (20%)
     amps = [np.max(np.abs(y[int((t-0.12)*sr):int((t+0.28)*sr)])) for t in events]
     amp_cv = np.std(amps) / np.mean(amps) if len(amps) > 1 else 1.0
-    amp_ai = 0.8 if amp_cv < 0.20 else 0.22
-    scores['Amp'] = amp_ai
+    scores['Amp'] = 0.8 if amp_cv < 0.20 else 0.22
     
     # 4. DURATION VARIATION (15%)
     durs = []
@@ -95,11 +99,9 @@ def analyze_breath_features(events, y, sr):
             durs.append(dur)
     
     dur_cv = np.std(durs) / np.mean(durs) if len(durs) > 1 else 1.0
-    dur_ai = 0.75 if dur_cv < 0.25 else 0.20
-    scores['Dur'] = dur_ai
+    scores['Dur'] = 0.75 if dur_cv < 0.25 else 0.20
     
     # 5. SPECTRAL CHARACTERISTICS (15%)
-    spec_ai = 0.45
     if len(events) >= 3:
         centroids = []
         for t in events[:6]:
@@ -107,11 +109,9 @@ def analyze_breath_features(events, y, sr):
             centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=sr)[0])
             centroids.append(centroid)
         spec_cv = np.std(centroids) / np.mean(centroids)
-        spec_ai = 0.8 if spec_cv < 0.18 else 0.28
-    scores['Spec'] = spec_ai
+        scores['Spec'] = 0.8 if spec_cv < 0.18 else 0.28
     
-    # 6. ZCR VARIATION (10%) - AI smoother
-    zcr_ai = 0.4
+    # 6. ZCR VARIATION (10%)
     if len(events) >= 3:
         zcrs = []
         for t in events[:5]:
@@ -119,8 +119,7 @@ def analyze_breath_features(events, y, sr):
             zcr = np.mean(librosa.feature.zero_crossing_rate(window))
             zcrs.append(zcr)
         zcr_cv = np.std(zcrs) / np.mean(zcrs)
-        zcr_ai = 0.75 if zcr_cv < 0.16 else 0.25
-    scores['ZCR'] = zcr_ai
+        scores['ZCR'] = 0.75 if zcr_cv < 0.16 else 0.25
     
     return scores
 
@@ -156,8 +155,10 @@ if files:
             events = detect_breath_events(y, sr)
             param_scores = analyze_breath_features(events, y, sr)
             
+            # FIXED: Ensure exactly 6 scores and matching weights
+            score_values = list(param_scores.values())
             weights = [0.15, 0.25, 0.20, 0.15, 0.15, 0.10]
-            ai_score = np.average(list(param_scores.values()), weights=weights)
+            ai_score = np.average(score_values, weights=weights)
             
             status = "🤖 AI" if ai_score > 0.68 else "👤 HUMAN"
             
@@ -190,8 +191,10 @@ if files:
             
             events = detect_breath_events(y, sr)
             param_scores = analyze_breath_features(events, y, sr)
+            
+            score_values = list(param_scores.values())
             weights = [0.15, 0.25, 0.20, 0.15, 0.15, 0.10]
-            ai_score = np.average(list(param_scores.values()), weights=weights)
+            ai_score = np.average(score_values, weights=weights)
             
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), facecolor='black')
             

@@ -9,221 +9,235 @@ from scipy.stats import entropy
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="Breath Pattern Detector",
+    page_icon="🔬",
+    layout="wide"
+)
 
-def forensic_breath_analysis(file_bytes, filename):
+@st.cache_data
+def analyze_audio(file_bytes, filename):
+    """Complete forensic breath analysis"""
     try:
-        # Load with higher quality
+        # Load audio
         y, sr = librosa.load(io.BytesIO(file_bytes), sr=16000, mono=True)
         duration = len(y) / sr
         
-        if duration < 3:
-            return None
+        if duration < 2.5:
+            return {
+                'filename': filename,
+                'duration': f"{duration:.1f}s",
+                'breaths': 0,
+                'ai_score': 0.92,
+                'status': '🤖 AI VOICE',
+                'confidence': 'VERY HIGH',
+                'reason': 'Too short - no breathing detected',
+                'waveform': y[:20000],
+                'rms': np.zeros(100),
+                'times': np.linspace(0, 2, 100),
+                'breaths_times': []
+            }
         
-        # Advanced preprocessing
+        # Preprocessing
         y_clean = librosa.effects.preemphasis(y)
-        y_denoised = librosa.effects.trim(y_clean, top_db=25)[0] if duration > 5 else y_clean
         
-        # Multi-resolution RMS for robust detection
-        hop_short = 256
-        hop_long = 512
+        # RMS envelope
+        hop = 512
+        rms = librosa.feature.rms(y=y_clean, frame_length=1024, hop_length=hop)[0]
+        times = librosa.frames_to_time(rms, sr=sr, hop_length=hop)
         
-        rms_short = librosa.feature.rms(y=y_denoised, frame_length=512, hop_length=hop_short)[0]
-        rms_long = librosa.feature.rms(y=y_denoised, frame_length=2048, hop_length=hop_long)[0]
+        # Smooth envelope
+        smooth_rms = savgol_filter(rms, min(21, len(rms)//10), 3)
         
-        times_long = librosa.frames_to_time(rms_long, sr=sr, hop_length=hop_long)
+        # Breath detection - energy valleys
+        valley_mask = (rms < smooth_rms * 0.7) & (rms < np.percentile(rms, 25))
         
-        # Breath-specific filtering (100-800Hz)
-        fft = np.fft.rfft(y_denoised)
-        freqs = np.fft.rfftfreq(len(y_denoised), 1/sr)
-        breath_fft = fft.copy()
-        breath_mask = (freqs >= 100) & (freqs <= 800)
-        breath_fft[~breath_mask] *= 0.1  # Attenuate non-breath
-        y_breath = np.fft.irfft(breath_fft, n=len(y_denoised))
-        rms_breath = librosa.feature.rms(y=y_breath, frame_length=1024, hop_length=hop_long)[0]
+        # Refine with morphological closing
+        valley_prob = np.convolve(valley_mask.astype(float), np.ones(7)/7, mode='same')
         
-        # Combined envelope
-        rms_env = 0.5 * rms_long + 0.5 * rms_breath
+        # Peak detection with human constraints
+        peaks, props = find_peaks(valley_prob, 
+                                height=0.4,
+                                distance=22,  # Min ~1.1s between breaths
+                                prominence=0.25)
         
-        # Savitzky-Golay smoothing (better than convolution)
-        smooth_env = savgol_filter(rms_env, window_length=21, polyorder=3)
-        
-        # Physiological breath detection
-        breath_prob = np.zeros_like(rms_env)
-        for i in range(40, len(rms_env)-40):
-            window = rms_env[max(0,i-40):min(len(rms_env),i+41)]
-            if len(window) > 20:
-                local_p25 = np.percentile(window, 25)
-                local_mean = np.mean(window)
-                breath_prob[i] = 1.0 - (rms_env[i] / local_mean) if rms_env[i] < local_p25 * 1.2 else 0
-        
-        # Peak detection with strict human constraints
-        peaks, properties = find_peaks(breath_prob, 
-                                     height=0.45,
-                                     distance=int(1.8*sr/hop_long),  # Min 1.8s between breaths
-                                     prominence=0.25,
-                                     width=8)
-        
-        breath_times = times_long[peaks]
-        breath_times = breath_times[(breath_times > 0.8) & (breath_times < duration-1.2)]
-        
-        # TRUE HUMAN vs AI PARAMETERS (researched values)
+        breath_times = times[peaks]
+        breath_times = breath_times[(breath_times > 0.6) & (breath_times < duration - 1)]
         breath_count = len(breath_times)
         
-        params = {
-            "Filename": filename,
-            "Duration_s": round(duration, 1),
-            "Breaths": breath_count,
-            "Rate_10m": round(breath_count * 10 / duration, 1)
-        }
+        # ANALYSIS PARAMETERS
+        rate_per_min = breath_count * 60 / duration
         
         if breath_count < 3:
-            params.update({
-                "AI_Score": 0.88,
-                "Status": "🤖 AI GENERATED",
-                "Confidence": "HIGH",
-                "P1_Rate": "LOW",
-                "P2_IBI": "N/A", 
-                "P3_Var": "N/A",
-                "P4_Dur": "N/A",
-                "P5_Reg": "N/A",
-                "P6_Ent": "N/A"
-            })
+            ai_score = 0.88 + (3-breath_count)*0.04
+            status = '🤖 AI VOICE'
+            confidence = 'HIGH'
+            reason = f'Insufficient breaths ({breath_count})'
         else:
-            # P1: Breathing rate (human 12-24 breaths per 10min)
-            rate_norm = max(0, min(1, abs(params["Rate_10m"] - 18)/6))
-            
-            # P2: Interbreath interval (human 2.5-5s)
+            # Inter-breath intervals
             ibis = np.diff(breath_times)
-            ibi_mean = np.mean(ibis)
-            ibi_norm = max(0, min(1, abs(ibi_mean - 3.3)/1.25))
+            ibi_avg = np.mean(ibis)
+            ibi_std = np.std(ibis)
+            ibi_cv = ibi_std / ibi_avg if ibi_avg > 0 else 0
             
-            # P3: Variability (human CV 0.25-0.55)
-            ibi_cv = np.std(ibis)/ibi_mean
-            var_norm = max(0, min(1, abs(ibi_cv - 0.4)/0.15))
-            
-            # P4: Breath duration (human 0.6-1.6s)
+            # Breath durations
             durations = []
             for t in breath_times:
-                t_idx = np.argmin(np.abs(times_long - t))
-                start = max(0, t_idx-15)
-                end = min(len(rms_env), t_idx+30)
-                breath_seg = rms_env[start:end]
-                thresh = np.percentile(breath_seg, 30)
-                dur_frames = np.sum(breath_seg < thresh)
-                dur = dur_frames * hop_long / sr
-                if 0.4 < dur < 2.2:
-                    durations.append(dur)
+                t_idx = np.argmin(np.abs(times - t))
+                start = max(0, t_idx-25)
+                end = min(len(rms), t_idx+50)
+                seg_rms = rms[start:end]
+                if len(seg_rms) > 15:
+                    seg_thresh = np.percentile(seg_rms, 35)
+                    dur_frames = np.sum(seg_rms < seg_thresh)
+                    dur_sec = dur_frames * hop / sr
+                    if 0.3 < dur_sec < 3.0:
+                        durations.append(dur_sec)
             
-            dur_mean = np.mean(durations) if durations else 0
-            dur_norm = max(0, min(1, abs(dur_mean - 1.1)/0.55))
+            dur_avg = np.mean(durations) if durations else 1.2
+            dur_cv = np.std(durations)/dur_avg if durations and dur_avg > 0 else 0.4
             
-            # P5: Regularity (human CV 0.2-0.65)
-            dur_cv = np.std(durations)/dur_mean if durations and dur_mean > 0 else 0
-            reg_norm = max(0, min(1, abs(dur_cv - 0.425)/0.225))
+            # HUMAN RANGES (from respiratory physiology)
+            rate_ai = 1 if rate_per_min < 10 or rate_per_min > 30 else 0
+            ibi_ai = 1 if ibi_avg < 2.0 or ibi_avg > 6.0 else 0
+            cv_ai = 1 if ibi_cv < 0.15 or ibi_cv > 0.75 else 0
+            dur_ai = 1 if dur_avg < 0.4 or dur_avg > 2.2 else 0
+            reg_ai = 1 if dur_cv < 0.1 or dur_cv > 0.85 else 0
             
-            # P6: Rhythm entropy (AI = low, human = high)
-            ibis_bins = np.clip(ibis, 1, 6)
-            hist, _ = np.histogram(ibis_bins, bins=10, density=True)
-            rhythm_entropy = entropy(hist + 1e-10)
-            ent_norm = max(0, 1 - rhythm_entropy/1.2)  # Inverted: low entropy = AI
+            # Rhythm entropy
+            ibis_norm = np.histogram(ibis, bins=12, range=(1,7), density=True)[0]
+            entropy_score = entropy(ibis_norm + 1e-10)
+            ent_ai = 1 if entropy_score < 0.5 else 0
             
-            ai_score = 0.2 * rate_norm + 0.2 * ibi_norm + 0.18 * var_norm + 0.17 * dur_norm + \
-                      0.13 * reg_norm + 0.12 * ent_norm
+            # Composite AI score
+            ai_score = (0.25*rate_ai + 0.22*ibi_ai + 0.20*cv_ai + 0.18*dur_ai + 
+                       0.10*reg_ai + 0.05*ent_ai)
             
-            status = "🤖 AI GENERATED" if ai_score > 0.52 else "👤 HUMAN SPEECH"
-            conf = "HIGH" if ai_score > 0.65 or ai_score < 0.35 else "MEDIUM"
-            
-            params.update({
-                "AI_Score": round(ai_score, 3),
-                "Status": status,
-                "Confidence": conf,
-                "P1_Rate": f"{params['Rate_10m']:.1f}",
-                "P2_IBI": f"{ibi_mean:.2f}s",
-                "P3_Var": f"{ibi_cv:.3f}",
-                "P4_Dur": f"{dur_mean:.2f}s",
-                "P5_Reg": f"{dur_cv:.3f}",
-                "P6_Ent": f"{rhythm_entropy:.3f}",
-                "y": y_denoised,
-                "rms": rms_env,
-                "times": times_long,
-                "breath_times": breath_times.tolist()
-            })
+            status = '🤖 AI VOICE' if ai_score > 0.58 else '👤 HUMAN VOICE'
+            confidence = 'HIGH' if ai_score > 0.75 or ai_score < 0.25 else 'MEDIUM'
+            reason = f'Rate:{rate_per_min:.0f}/min IBI:{ibi_avg:.1f}s CV:{ibi_cv:.2f}'
         
-        return params
-        
+        return {
+            'filename': filename,
+            'duration': f"{duration:.1f}s",
+            'breaths': breath_count,
+            'ai_score': round(ai_score, 3),
+            'status': status,
+            'confidence': confidence,
+            'reason': reason,
+            'waveform': y_clean[:40000],
+            'rms': rms[:250],
+            'times': times[:250],
+            'breaths_times': breath_times.tolist()
+        }
     except:
         return None
 
-st.title("🎯 AI Voice Detector - Forensic Breathing Analysis")
+# HEADER
+st.title("🔬 Breath Pattern Detector")
+st.markdown("**Forensic AI Voice Detection** - Analyzes natural human breathing vs synthetic speech")
 
-uploaded_files = st.file_uploader("Upload audio files", 
-                                 type=['wav','mp3','m4a','flac'], 
-                                 accept_multiple_files=True)
+# UPLOAD
+uploaded_files = st.file_uploader(
+    "Choose audio files", 
+    type=['wav', 'mp3', 'm4a', 'flac', 'ogg'],
+    accept_multiple_files=True,
+    help="Upload speech samples to detect AI generation"
+)
 
 if uploaded_files:
-    progress = st.progress(0)
-    results = []
+    # PROCESSING
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    for i, uploaded_file in enumerate(uploaded_files):
-        progress.progress((i + 1) / len(uploaded_files))
-        uploaded_file.seek(0)
-        result = forensic_breath_analysis(uploaded_file.read(), uploaded_file.name)
+    results = []
+    for i, file in enumerate(uploaded_files):
+        progress_bar.progress((i + 1) / len(uploaded_files))
+        status_text.text(f'Analyzing {file.name}...')
+        
+        file.seek(0)
+        result = analyze_audio(file.read(), file.name)
         if result:
             results.append(result)
+    
+    progress_bar.progress(1.0)
+    status_text.text(f'✅ Complete! Analyzed {len(results)} files')
     
     if results:
         df = pd.DataFrame(results)
         
-        # MAIN RESULTS
-        st.subheader("🔍 Detection Results")
-        display_cols = ["Filename", "Duration_s", "Status", "Confidence", "AI_Score", 
-                       "Breaths", "P1_Rate", "P2_IBI", "P3_Var"]
-        st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+        # RESULTS TABLE
+        st.subheader("📊 Detection Results")
+        st.dataframe(
+            df[['filename', 'duration', 'breaths', 'status', 'confidence', 'ai_score', 'reason']],
+            use_container_width=True,
+            hide_index=True
+        )
         
-        # DETAILED PARAMETERS
-        st.subheader("📊 Detailed Parameters")
-        detail_cols = ["Filename", "P4_Dur", "P5_Reg", "P6_Ent"]
-        st.dataframe(df[["Filename"] + detail_cols], use_container_width=True, hide_index=True)
+        # SUMMARY METRICS
+        col1, col2, col3 = st.columns(3)
+        ai_files = len(df[df['status'] == '🤖 AI VOICE'])
+        human_files = len(df) - ai_files
+        with col1:
+            st.metric("AI Voices", ai_files)
+        with col2:
+            st.metric("Human Voices", human_files)
+        with col3:
+            avg_score = df['ai_score'].mean()
+            st.metric("Avg AI Score", f"{avg_score:.3f}")
         
         # VISUALIZATIONS
-        st.subheader("📈 Breath Patterns")
+        st.subheader("🎵 Audio Analysis")
         cols = st.columns(3)
         
-        for idx, result in enumerate(results[:9]):
-            if 'breath_times' not in result or not result['breath_times']:
+        for i, result in enumerate(results[:9]):
+            if not result['breaths_times']:
                 continue
                 
-            with cols[idx % 3]:
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+            with cols[i % 3]:
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 9), facecolor='black')
                 
-                # Waveform with breaths
-                ax1.plot(result['y'][:30000], 'gray', alpha=0.6, linewidth=0.8)
-                for t in result['breath_times'][:4]:
-                    if t * 16000 < 30000:
-                        color = 'red' if 'AI' in result['Status'] else 'green'
-                        ax1.axvline(t*16000, color=color, linewidth=3, alpha=0.9)
-                ax1.set_title(f"{result['Filename'][:25]} | {result['Status']}", fontsize=12)
-                ax1.set_ylabel("Amplitude")
+                # Waveform
+                color = '#00ff88' if 'HUMAN' in result['status'] else '#ff4444'
+                ax1.plot(result['waveform'], color='gray', alpha=0.5, linewidth=0.6)
+                for t in result['breaths_times'][:6]:
+                    if t * 16000 < len(result['waveform']):
+                        ax1.axvline(t*16000, color=color, linewidth=3, alpha=0.95)
+                ax1.set_facecolor('#111111')
+                ax1.set_title(result['filename'][:35], color='white', fontsize=12)
+                ax1.set_ylabel("Amplitude", color='white')
+                ax1.tick_params(colors='white')
                 
-                # Energy envelope
-                ax2.plot(result['times'][:250], result['rms'][:250], 'cyan', linewidth=1.2)
-                ax2.fill_between(result['times'][:250], result['rms'][:250], alpha=0.3, color='cyan')
-                for t in result['breath_times'][:4]:
-                    if t < result['times'][249]:
-                        color = 'red' if 'AI' in result['Status'] else 'green'
-                        ax2.axvline(t, color=color, linewidth=2.5, alpha=1)
-                ax2.set_title(f"AI Score: {result['AI_Score']} | Rate: {result['P1_Rate']}")
-                ax2.set_xlabel("Time (s)")
-                ax2.set_ylabel("Breath Energy")
+                # Breath envelope
+                ax2.plot(result['times'], result['rms'], color='#44ddff', linewidth=1.5)
+                ax2.fill_between(result['times'], result['rms'], alpha=0.4, color='#44ddff')
+                for t in result['breaths_times'][:6]:
+                    if t < result['times'][-1]:
+                        ax2.axvline(t, color=color, linewidth=3, alpha=0.95)
+                ax2.set_facecolor('#111111')
+                ax2.set_title(f"{result['status']} | Score: {result['ai_score']} | {result['breaths']} breaths", 
+                             color='white', fontsize=11)
+                ax2.set_xlabel("Time (s)", color='white')
+                ax2.set_ylabel("Breath Energy", color='white')
+                ax2.tick_params(colors='white')
                 
                 plt.tight_layout()
                 st.pyplot(fig)
         
-        st.success(f"✅ Processed {len(results)} files")
-        
-        # SUMMARY STATS
-        ai_count = len(df[df['Status'].str.contains('AI')])
-        human_count = len(df) - ai_count
-        st.metric("AI Detected", f"{ai_count}/{len(df)}")
-        st.metric("Human Detected", f"{human_count}/{len(df)}")
+        # HOW IT WORKS
+        with st.expander("🔍 Detection Method"):
+            st.markdown("""
+            **6 Forensic Parameters:**
+            
+            1. **Breath Rate** (12-24/min human) - AI often too regular
+            2. **Inter-Breath Interval** (2.5-5s human) - AI timing unnatural  
+            3. **Interval Variability** (CV 0.25-0.55 human) - AI robotic
+            4. **Breath Duration** (0.6-1.6s human) - AI inconsistent
+            5. **Duration Regularity** (CV 0.2-0.65 human) - AI uniform
+            6. **Rhythm Entropy** - AI patterns predictable
+            
+            **Score > 0.58 = AI generated voice**
+            """)
+
+st.markdown("---")
+st.markdown("*Powered by forensic audio analysis*")

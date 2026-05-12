@@ -1,3 +1,22 @@
+import streamlit as st
+import numpy as np
+import librosa
+import io
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy import signal
+import gc
+
+st.set_page_config(page_title="Deepfake Voice Detection", layout="wide")
+
+@st.cache_data
+def load_audio(file_bytes):
+    try:
+        y, sr = librosa.load(io.BytesIO(file_bytes), sr=16000, mono=True, duration=30)
+        return y, sr
+    except:
+        return None, None
+
 def forensic_analysis(y, sr, name):
     y_norm = librosa.util.normalize(y)
     duration = len(y_norm) / sr
@@ -11,10 +30,9 @@ def forensic_analysis(y, sr, name):
     breaths = [t for t in times if 0.4 < t < (duration - 0.4)]
     
     if len(breaths) < 2:
-        is_ai = duration > 6
-        return {"File": name, "Status": "AI" if is_ai else "HUMAN", "AI Prob": "95%" if is_ai else "15%", "IBI Reg": 0, "Amp Var": 0, "Presence": "0%", "Sim Val": 0}, []
+        return {"File": name, "Status": "AI", "AI Prob": "99%", "IBI Reg": 0, "Amp Var": 0, "Presence": "0%", "Sim Val": 0}, []
 
-    # PARAMETERS
+    # PARAMETER EXTRACTION
     ibi = np.diff(breaths)
     ibi_cv = np.std(ibi) / np.mean(ibi) if len(ibi) > 0 else 0
     amps = [rms_smooth[p] for p in peaks]
@@ -31,23 +49,18 @@ def forensic_analysis(y, sr, name):
     
     sim_val = np.mean(np.std(textures, axis=0)) * 10 if len(textures) > 1 else 50.0
 
-    # --- THE BALANCED DECISION ENGINE ---
-    # BIOLOGICAL SHIELD: If a voice is sufficiently messy, it's human.
-    # Humans have high entropy; we lowered the threshold to 32.0 to protect humans.
-    is_biological = (sim_val > 32.0) and (ibi_cv > 0.28 or amp_cv > 0.28)
+    # --- BALANCED DECISION ENGINE ---
+    # HUMANITY SHIELD: Humans are messy. AI is too consistent.
+    # Lowered thresholds to ensure humans are detected as humans.
+    is_biological = (sim_val > 30.0) and (ibi_cv > 0.27 or amp_cv > 0.27)
 
     if is_biological:
         final_prob = 12
         status = "HUMAN"
     else:
-        # If it doesn't meet the "Human Messiness" criteria, it's AI.
-        # AI usually sits in the 10-25 Sim Val range.
-        if sim_val < 19.0: 
-            final_prob = 99
-        elif sim_val < 28.0: 
-            final_prob = 85
-        else: 
-            final_prob = 65
+        if sim_val < 19.0: final_prob = 99
+        elif sim_val < 29.0: final_prob = 85
+        else: final_prob = 65
         status = "AI"
 
     return {
@@ -55,4 +68,38 @@ def forensic_analysis(y, sr, name):
         "IBI Reg": round(ibi_cv, 3), "Amp Var": round(amp_cv, 3), 
         "Presence": f"{presence:.1%}", "Sim Val": round(sim_val, 3)
     }, breaths
-tus']), use_container_width=True)
+
+# --- UI SECTION ---
+st.title("🔬 PneumaForensic v18.3")
+
+files = st.file_uploader("", type=['wav', 'mp3'], accept_multiple_files=True)
+
+if files:
+    results = []
+    for f in files:
+        f.seek(0)
+        y, sr = load_audio(f.read())
+        if y is not None:
+            try:
+                m, b_times = forensic_analysis(y, sr, f.name)
+                results.append(m)
+                with st.expander(f"{f.name} - {m['Status']}"):
+                    fig, ax = plt.subplots(figsize=(12, 1.2))
+                    t = np.linspace(0, len(y)/sr, len(y))
+                    ax.plot(t, y, color='gray', alpha=0.4) 
+                    for bt in b_times:
+                        ax.axvline(x=bt, color='red', linestyle='--', linewidth=1.2)
+                    ax.axis('off')
+                    st.pyplot(fig)
+                    plt.close(fig)
+            except Exception as e:
+                st.error(f"Error: {e}")
+            del y
+            gc.collect()
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        def color_status(v):
+            return f'color: {"#ff4b4b" if "AI" in v else "#00f900"}; font-weight: bold'
+        # Fixed the closing bracket error here
+        st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)

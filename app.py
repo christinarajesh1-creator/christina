@@ -7,11 +7,12 @@ import matplotlib.pyplot as plt
 from scipy import signal
 import gc
 
-st.set_page_config(page_title="PneumaForensic v15.0", layout="wide")
+st.set_page_config(page_title="Deepfake Voice Detection", layout="wide")
 
 @st.cache_data
 def load_audio(file_bytes):
     try:
+        # High-res load to catch neural texture clones
         y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, mono=True, duration=30)
         return y, sr
     except:
@@ -21,72 +22,75 @@ def forensic_analysis(y, sr, name):
     y_norm = librosa.util.normalize(y)
     duration = len(y_norm) / sr
     
-    # 1. High-Sensitivity Breath Tracking
+    # 1. Advanced Breath Tracking
     hop = 256
     rms = librosa.feature.rms(y=y_norm, hop_length=hop).flatten()
     rms_smooth = np.convolve(rms, np.ones(5)/5, mode='same')
     
-    peaks, _ = signal.find_peaks(rms_smooth, height=np.median(rms_smooth)*1.1, distance=sr//hop)
+    peaks, _ = signal.find_peaks(rms_smooth, height=np.median(rms_smooth)*1.15, distance=sr//hop)
     times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop)
     breaths = [t for t in times if 0.4 < t < (duration - 0.4)]
     
     if len(breaths) < 2:
-        is_ai = duration > 5
-        return {"File": name, "Status": "AI (No Bio)" if is_ai else "HUMAN", "AI Prob": "95%" if is_ai else "10%"}, []
+        return {"File": name, "Status": "AI (No Bio)", "AI Prob": "95%", "IBI Reg": 0, "Amp Var": 0, "Presence": "0%", "Sim Val": 0}, []
 
-    # --- THE 6 PARAMETERS (STRICT MEASUREMENT) ---
+    # --- PARAMETER EXTRACTION ---
     ibi = np.diff(breaths)
-    ibi_cv = np.std(ibi) / np.mean(ibi)
+    ibi_cv = np.std(ibi) / np.mean(ibi) if len(ibi) > 0 else 0
     
     amps = [rms_smooth[p] for p in peaks]
-    amp_cv = np.std(amps) / np.mean(amps)
+    amp_cv = np.std(amps) / np.mean(amps) if len(amps) > 0 else 0
     
     presence = (len(breaths) * 0.45) / duration
 
-    # Similarity Fingerprint (Detects ElevenLabs Clone Breaths)
+    # The "Neural Clone" Fingerprint (Detects copy-pasted breaths)
     textures = []
-    for b in breaths[:5]:
-        start, end = int(b * sr), int((b + 0.2) * sr)
+    for b in breaths[:6]:
+        start, end = int(b * sr), int((b + 0.22) * sr)
         seg = y_norm[start:end]
         if len(seg) >= int(0.1*sr):
             textures.append(np.mean(librosa.feature.mfcc(y=seg, sr=sr, n_mfcc=13), axis=1))
-    sim_val = np.mean(np.std(textures, axis=0)) if len(textures) > 1 else 5.0
-
-    zcr = librosa.feature.zero_crossing_rate(y_norm).flatten()
-    zcr_cv = np.std(zcr) / (np.mean(zcr) + 1e-10)
-
-    # --- THE DECISION MATRIX ---
-    # We define "Human Territory" and "AI Territory"
     
-    score = 0
-    # AI SIGNATURE 1: The Inhale Clone (Strongest ElevenLabs Indicator)
-    if sim_val < 1.3: score += 50 
-    
-    # AI SIGNATURE 2: Robotic Rhythm (Tuned to exclude human conversation)
-    if 0.16 < ibi_cv < 0.26: score += 30
-    elif ibi_cv < 0.14: score += 50
-    
-    # AI SIGNATURE 3: Over-Breathing
-    if presence > 0.31: score += 25
+    # Sim_val: AI usually < 1.45 (Cloned/Similar). Humans usually > 2.2 (Unique).
+    sim_val = np.mean(np.std(textures, axis=0)) if len(textures) > 1 else 10.0
 
-    # HUMAN SHIELD: If it's messy, it's a person.
-    is_messy = (ibi_cv > 0.36) or (amp_cv > 0.40) or (sim_val > 2.8)
+    # --- THE DETECTION ENGINE ---
+    # We switch to a "Red Flag" system
+    red_flags = 0
+    
+    # Flag 1: The "Uncanny" Timing (ElevenLabs hides in the 0.18-0.28 range)
+    if 0.16 < ibi_cv < 0.31: red_flags += 2
+    elif ibi_cv < 0.15: red_flags += 3 # Robotic
+    
+    # Flag 2: Spectral Clones (The strongest AI indicator)
+    if sim_val < 1.6: red_flags += 3
+    
+    # Flag 3: Synthetic Presence
+    if presence > 0.28: red_flags += 1
+    
+    # Flag 4: Flat Amplitude (No lung depletion)
+    if amp_cv < 0.19: red_flags += 1
 
-    if is_messy:
-        final_score = min(30, score) # Biological variance overrides AI flags
+    # --- HUMAN PROTECTION ---
+    # If the voice is naturally chaotic, ignore the red flags
+    if (ibi_cv > 0.38) or (amp_cv > 0.40) or (sim_val > 2.8):
+        status = "HUMAN"
+        prob = 15
+    elif red_flags >= 3:
+        status = "AI"
+        prob = min(99, 40 + (red_flags * 15))
     else:
-        final_score = score
+        status = "HUMAN"
+        prob = 35
 
-    status = "AI" if final_score >= 45 else "HUMAN"
-    
     return {
-        "File": name, "Status": status, "AI Prob": f"{min(99, final_score)}%",
+        "File": name, "Status": status, "AI Prob": f"{prob}%",
         "IBI Reg": round(ibi_cv, 3), "Amp Var": round(amp_cv, 3), 
-        "Presence": f"{presence:.1%}", "ZCR Var": round(zcr_cv, 3), "Sim Val": round(sim_val, 3)
+        "Presence": f"{presence:.1%}", "Sim Val": round(sim_val, 3)
     }, breaths
 
 # --- UI SECTION ---
-st.title("🔬 PneumaForensic v15.0")
+st.title("🔬 PneumaForensic v16.0")
 uploaded_files = st.file_uploader("", type=['wav', 'mp3'], accept_multiple_files=True)
 
 if uploaded_files:

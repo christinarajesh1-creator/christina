@@ -49,9 +49,8 @@ def forensic_analysis(y, sr, name):
     stft_matrix = librosa.stft(y_norm, n_fft=512, hop_length=hop)
     magnitude = np.abs(stft_matrix)
     
-    # FIXED: Extracting the actual integer length of the rows index specifically
-    total_rows = magnitude.shape[0]
-    total_cols = magnitude.shape[1]
+    # FIXED: Clean, direct tuple unpacking to extract rows and columns safely
+    total_rows, total_cols = magnitude.shape
     
     hf_start_idx = int(total_rows * 0.75)
     hf_band = magnitude[hf_start_idx:, :]

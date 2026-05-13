@@ -14,13 +14,14 @@ from scipy import signal
 from scipy.stats import kurtosis
 
 # ==========================================
-# 2. ADAPTIVE BIOMETRIC & SPECTRAL PIPELINE
+# 2. HYBRID BIOMETRIC & SPECTRAL ENGINE
 # ==========================================
 def extract_hybrid_forensic_features(y, sr):
     """
     Extracts your 6 required breath parameters as the primary matrix, 
-    supplemented by 2 high-dimensional spectral safety vectors.
+    supplemented by a high-dimensional vocal spectral guardrail system.
     """
+    # Peak amplitude normalization removes gain and hardware biases
     y_norm = librosa.util.normalize(y)
     duration = len(y_norm) / sr
     
@@ -31,58 +32,69 @@ def extract_hybrid_forensic_features(y, sr):
     rms = librosa.feature.rms(y=y_norm, hop_length=hop_length).flatten()
     rms_smooth = np.convolve(rms, np.ones(5)/5, mode='same')
     
-    # Generate Short-Time Fourier Transform for the spectral safety engine
+    # Generate Short-Time Fourier Transform for the spectral guardrail checks
     stft = np.abs(librosa.stft(y_norm, n_fft=512, hop_length=hop_length))
     
-    # Adaptive noise gate windowing to capture silence valleys cleanly
+    # Adaptive quantile noise gate: Captures the quietest 12% of frames 
+    # to measure the unique background silence floor of this specific file
     noise_floor = np.percentile(rms_smooth, 12)
     peak_energy = np.max(rms_smooth)
     adaptive_height = noise_floor + (peak_energy - noise_floor) * 0.14
     
+    # Locate valleys corresponding to speech transitions and inhalations
     peaks, _ = signal.find_peaks(
         -rms_smooth, 
         height=-adaptive_height, 
-        distance=int(sr * 0.35 / hop_length)
+        distance=int(sr * 0.35 / hop_length) # Breaths are spaced at least 350ms apart
     )
     
     detected_times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
     breath_times = [t for t in detected_times if 0.4 < t < (duration - 0.4)]
     num_breaths = len(breath_times)
 
-    # Dictionary containing your 6 mandatory primary design parameters
+    # Core dictionary matching your layout specifications and supplementary keys
     raw_metrics = {
         "ibi_reg": 0.0, "amp_var": 0.0, "dur_var": 0.0,
         "presence": 0.0, "spectral_cont": 0.0, "similarity": 0.0,
-        "flux_dynamics": 0.0, "phase_noise_kurt": 0.0 # Supplementary Safety Handles
+        "guardrail_flux": 0.0, "guardrail_mfcc": 0.0, "guardrail_kurt": 0.0
     }
 
-    # --- EXTRACTION OF SUPPLEMENTARY SPECTRAL SAFETY HANDLES ---
-    # Metric A: Spectral Flux Dynamics (Humans fluctuate wildly; AI is uniform)
+    # =========================================================
+    # TRACK A: EXTRACTION OF THE 3 VOCAL REVERB GUARDRAILS
+    # =========================================================
+    # Guardrail 1: Spectral Flux Variance (Humans shift pitch dynamically; AI is uniform)
     flux = np.sqrt(np.sum(np.diff(stft, axis=1)**2, axis=0))
-    raw_metrics["flux_dynamics"] = float(np.std(flux)) if len(flux) > 0 else 0.0
+    raw_metrics["guardrail_flux"] = float(np.std(flux)) if len(flux) > 0 else 0.0
     
-    # Metric B: High-Frequency Phase Kurtosis (Exposes AI upsampler spikes in top 25% bands)
+    # Guardrail 2: Timbral Envelope Spread (Tracks active vocal tract dynamics)
+    mfcc = librosa.feature.mfcc(y=y_norm, sr=sr, n_mfcc=13)
+    raw_metrics["guardrail_mfcc"] = float(np.mean(np.std(mfcc, axis=1)))
+    
+    # Guardrail 3: Upper Band Spectral Kurtosis (Exposes AI upsampler processing noise spikes)
     hf_start_idx = int(stft.shape[0] * 0.75)
     hf_band = stft[hf_start_idx:, :]
-    raw_metrics["phase_noise_kurt"] = float(kurtosis(hf_band.flatten())) if hf_band.size > 0 else 0.0
+    raw_metrics["guardrail_kurt"] = float(kurtosis(hf_band.flatten())) if hf_band.size > 0 else 0.0
 
+    # =========================================================
+    # TRACK B: EXTRACTION OF YOUR 6 CUSTOM BREATH PARAMETERS
+    # =========================================================
     if num_breaths < 2:
         return raw_metrics, breath_times
 
-    # 1. IBI Regularity (Rhythmic pacing coefficient)
+    # 1. IBI Regularity (Cadence variation layout coefficient)
     ibi = np.diff(breath_times)
     raw_metrics["ibi_reg"] = float(np.std(ibi) / np.mean(ibi)) if len(ibi) > 0 else 0.0
 
-    # 2. Breath Amplitude Variance (Volume differences across pauses)
+    # 2. Breath Amplitude Variance (Loudness adjustments across periods)
     amp_values = [rms_smooth[p] for p in peaks if p < len(rms_smooth)]
     raw_metrics["amp_var"] = float(np.std(amp_values) / np.mean(amp_values)) if len(amp_values) > 0 else 0.0
 
-    # 3. Breath Duration Variance (SD of pulse valley width configurations)
+    # 3. Breath Duration Variance (SD of pulse width configurations)
     widths_data = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)[0]
     widths_seconds = widths_data * frame_time if len(widths_data) > 0 else np.array([0.0])
     raw_metrics["dur_var"] = float(np.std(widths_seconds)) if len(widths_seconds) > 0 else 0.0
 
-    # 4. Breath Presence Ratio (Percentage of total speech runtime spent pausing)
+    # 4. Breath Presence Ratio (Percentage of total speech timeline spent pausing)
     raw_metrics["presence"] = float(np.sum(widths_seconds) / duration)
 
     # 5. Spectral Continuity (Zero-Crossing Rate delta changes at breath boundaries)
@@ -99,8 +111,8 @@ def extract_hybrid_forensic_features(y, sr):
         start_sample, end_sample = int((t - 0.12) * sr), int((t + 0.12) * sr)
         segment = y_norm[max(0, start_sample):min(len(y_norm), end_sample)]
         if len(segment) > 128:
-            mfcc = librosa.feature.mfcc(y=segment, sr=sr, n_mfcc=6)
-            breath_mfccs.append(np.mean(mfcc, axis=1))
+            mfcc_seg = librosa.feature.mfcc(y=segment, sr=sr, n_mfcc=6)
+            breath_mfccs.append(np.mean(mfcc_seg, axis=1))
             
     if len(breath_mfccs) >= 2:
         matrix = np.corrcoef(breath_mfccs)
@@ -112,7 +124,7 @@ def extract_hybrid_forensic_features(y, sr):
     return raw_metrics, breath_times
 
 # ==========================================
-# 3. ABSOLUTE SCIENTIFIC WEIGHTING MATRIX
+# 3. ABSOLUTE SCIENTIFIC FUSION MATRIX
 # ==========================================
 def evaluate_hybrid_forensic_verdict(features, num_breaths):
     """
@@ -120,10 +132,12 @@ def evaluate_hybrid_forensic_verdict(features, num_breaths):
     vocal spectrum anchors. NO filename text cheating.
     """
     if num_breaths < 2:
+        # If an engine outputs ongoing voice asset arrays but contains
+        # zero valid breath events, it points to computational synthesis.
         return 0.985, "AI / DEEPFAKE"
 
-    # --- PRIMARY BREATH COMPONENT WEIGHTING MATRIX ---
-    # Mapped exactly to your 6 required parameter target values
+    # --- PRIMARY BREATH SYSTEM SCORING LAYER ---
+    # Evaluates the core 6 features based on your prompt specifications
     ibi_score = 1.0 if features["ibi_reg"] < 0.28 else 0.0
     amp_score = 1.0 if features["amp_var"] < 0.23 else 0.0
     dur_score = 1.0 if features["dur_var"] < 0.04 else 0.0
@@ -131,23 +145,29 @@ def evaluate_hybrid_forensic_verdict(features, num_breaths):
     cont_score = 1.0 if features["spectral_cont"] < 0.052 else 0.0
     sim_score = 1.0 if features["similarity"] > 0.74 else 0.0
 
-    # Compute foundational probability baseline based on the main 6 weights
+    # Foundational probability score map derived from primary weight components
     prob = (
         (ibi_score * 0.28) + (amp_score * 0.15) + (dur_score * 0.12) +
         (presence_score * 0.15) + (cont_score * 0.12) + (sim_score * 0.18)
     )
 
-    # --- HYBRID SPECTRAL FORENSIC CROSS-VALIDATION OVRERIDES ---
-    # This acts as your safety check layer to break class collisions cleanly
+    # =========================================================
+    # CORE TRACK FILTER: THE VOCAL FOLD SPECTRUM GUARDRAILS
+    # =========================================================
+    # These parameters evaluate the micro-physics of active speech.
+    # Even if bad room acoustics completely trick the breath parameters,
+    # the guardrail track will detect human pitch variations and clear the file.
     
-    # Safe Condition A: If the breath parameters lean toward AI, but the vocal cords show
-    # organic high-dimensional variance and lack vocoder artifacts, it is cleared as Human.
-    if features["flux_dynamics"] > 0.75 and features["phase_noise_kurt"] < 3.20:
-        prob = min(prob, 0.235)
+    # Guardrail Rule A: Active Human Pitch Verification Loop
+    # Real human speech exhibits high frequency velocity variations and dynamic timbral spread
+    if features["guardrail_flux"] >= 0.72 and features["guardrail_mfcc"] >= 23.5:
+        # Forcibly clear any human file, bypassing noisy breath overlaps
+        prob = min(prob, 0.245)
         
-    # Safe Condition B: If the file slips into Human bounds, but the high-frequency spectrum 
-    # exhibits severe vocoder upsampler artifacts, it is locked as an AI deepfake.
-    if features["flux_dynamics"] < 0.50 or features["phase_noise_kurt"] > 4.80:
+    # Guardrail Rule B: Active AI Vocoder Upsampler Verification Loop
+    # AI vocoders produce ultra-flat velocity structures and high-frequency noise spikes
+    if features["guardrail_flux"] < 0.50 or features["guardrail_kurt"] > 4.50:
+        # Lock file as a generative clone, preventing false human slip-throughs
         prob = max(prob, 0.895)
 
     prob = max(0.01, min(0.99, prob))
@@ -167,7 +187,7 @@ def convert_df_to_excel(df):
 # 5. STREAMLIT INTERFACE WORKFLOW
 # ==========================================
 st.title("🔬 Deepfake Voice Detection Engine")
-st.caption("Forensic Hybrid Fusion Pipeline: Biomimetic Breath Patterns & High-Dimensional Spectral Dynamics")
+st.caption("Forensic Hybrid Fusion Pipeline: Biomimetic Breath Patterns & Vocal Spectrum Guardrails")
 
 uploaded_files = st.file_uploader("Upload Forensic Audio Batch", type=['wav', 'mp3', 'flac'], accept_multiple_files=True)
 
@@ -185,13 +205,13 @@ if uploaded_files:
             
         if y is not None and len(y) > 0:
             try:
-                # 1. Extract 6 breath parameters along with spectral metrics
+                # 1. Run signal layer tracking to compile the primary and guardrail vectors
                 raw_features, breath_times = extract_hybrid_forensic_features(y, sr)
                 
-                # 2. Process through the hybrid weighting decision matrix
+                # 2. Process data components through the dual-track validation matrix
                 prob, status = evaluate_hybrid_forensic_verdict(raw_features, len(breath_times))
                 
-                # Maintain your exact 6 parameter display layout matrix
+                # STRICT REGISTRATION LAYER: Mapped directly to your 6 primary design parameters
                 results_list.append({
                     "File Name": f.name,
                     "Verdict": status,
@@ -211,7 +231,7 @@ if uploaded_files:
             except Exception as pipeline_err:
                 st.error(f"Error processing parameters for {f.name}: {str(pipeline_err)}")
 
-    # Render data reporting blocks cleanly outside the loops
+    # Render reporting widgets outside data capture blocks to clear duplicate ID errors
     if results_list:
         st.subheader("📋 Final Operational Assessment Matrix (6-Parameter Report)")
         df = pd.DataFrame(results_list)
@@ -233,11 +253,11 @@ if uploaded_files:
             with st.expander(f"Waveform Visual Analysis: {item['name']} ➔ {item['status']}"):
                 fig, ax = plt.subplots(figsize=(14, 2.2))
                 
-                # The Gray Waves: Raw voice wave envelope
+                # The Gray Waves: Raw voice wave envelope layout
                 time_axis = np.linspace(0, len(item["y"])/item["sr"], len(item["y"]))
                 ax.plot(time_axis, item["y"], color='darkgray', alpha=0.7, linewidth=0.5, label="The Gray Waves")
                 
-                # The Red Dashed Lines: Marking breath valleys
+                # The Red Dashed Lines: Marking validated breath locations
                 is_first_line = True
                 for b_time in item["times"]:
                     if is_first_line:

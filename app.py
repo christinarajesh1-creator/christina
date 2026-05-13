@@ -28,7 +28,7 @@ def apply_spectral_noise_subtraction(y, sr):
     noise_thresh = np.percentile(frame_energies, 15)
     noise_frames = stft_mag[:, frame_energies <= noise_thresh]
     
-    if noise_frames.shape[1] > 0:
+    if noise_frames.shape[0] > 0:
         mean_noise_spectrum = np.mean(noise_frames, axis=1, keepdims=True)
     else:
         mean_noise_spectrum = np.median(stft_mag, axis=1, keepdims=True) * 0.1
@@ -131,14 +131,15 @@ def convert_df_to_excel(df):
 # 5. STREAMLIT INTERFACE & RUNTIME EXECUTION
 # ==========================================
 st.title("🔬 Deepfake Voice Detection Engine")
-st.caption("Forensic Analysis Pipeline Powered by Multi-Band Spectral Subtraction & Batch Verification")
+st.caption("Forensic Analysis Pipeline Powered by Absolute Acoustic Boundary Verification")
 
 uploaded_files = st.file_uploader("Upload Forensic Audio Batch", type=['wav', 'mp3', 'flac'], accept_multiple_files=True)
 
 if uploaded_files:
-    raw_batch_data = []
+    results_list = []
+    file_metadata = []
     
-    # Process files individually to gather baseline data metrics
+    # Process files independently to gather acoustic bounds
     for f in uploaded_files:
         f.seek(0)
         try:
@@ -150,49 +151,27 @@ if uploaded_files:
         if y is not None and len(y) > 0:
             y_clean = apply_spectral_noise_subtraction(y, sr)
             features, breath_times = extract_6_breath_parameters(y_clean, sr)
-            raw_batch_data.append({
-                "file_name": f.name, "y": y, "sr": sr, "times": breath_times, "feats": features
-            })
-
-    if raw_batch_data:
-        # Establish localized macro batch baselines dynamically
-        all_presences = [item["feats"]["presence"] for item in raw_batch_data]
-        all_ibis = [item["feats"]["ibi_reg"] for item in raw_batch_data]
-        
-        median_batch_presence = np.median(all_presences) if all_presences else 0.20
-        median_batch_ibi = np.median(all_ibis) if all_ibis else 0.35
-        
-        results_list = []
-        
-        # Second matrix processing run to establish classification probability distributions
-        for item in raw_batch_data:
-            name = item["file_name"]
-            features = item["feats"]
-            num_breaths = len(item["times"])
+            num_breaths = len(breath_times)
             
-            # 1. IBI Regularity Evaluation (28% Weight)
-            if features["ibi_reg"] < 0.22 or features["ibi_reg"] < (median_batch_ibi * 0.75):
-                ibi_score = 1.0
-            else:
-                ibi_score = 0.0
+            # ABSOLUTE BIOMETRIC CLASSIFICATION ENGINE (No batch averages, no filenames)
+            
+            # 1. IBI Regularity (28% Weight): Mechanically uniform spacing = AI indicator
+            ibi_score = 1.0 if (num_breaths < 2 or features["ibi_reg"] <= 0.32) else 0.0
                 
-            # 2. Breath Amplitude Evaluation (15% Weight)
-            amp_score = 1.0 if features["amp_var"] < 0.20 else 0.0
+            # 2. Breath Amplitude (15% Weight): Flattened artificial volume envelopes = AI indicator
+            amp_score = 1.0 if features["amp_var"] < 0.22 else 0.0
             
-            # 3. Breath Duration Evaluation (12% Weight)
-            dur_score = 1.0 if features["dur_var"] < 0.05 else 0.0
+            # 3. Breath Duration (12% Weight): Cloned, identical length breaths = AI indicator
+            dur_score = 1.0 if features["dur_var"] < 0.04 else 0.0
             
-            # 4. Breath Presence Evaluation (15% Weight)
-            if features["presence"] > 0.40 and features["presence"] >= (median_batch_presence * 1.15):
-                presence_score = 1.0
-            else:
-                presence_score = 0.0
+            # 4. Breath Presence (15% Weight): Over-saturated or empty presence maps = AI indicator
+            presence_score = 1.0 if (features["presence"] > 0.28 or features["presence"] < 0.03) else 0.0
                 
-            # 5. Spectral Continuity Evaluation (12% Weight)
-            cont_score = 1.0 if features["spectral_cont"] < 0.055 else 0.0
+            # 5. Spectral Continuity (12% Weight): Artificial processing boundaries = AI indicator
+            cont_score = 1.0 if features["spectral_cont"] < 0.052 else 0.0
             
-            # 6. Breath Similarity Evaluation (18% Weight)
-            sim_score = 1.0 if features["similarity"] > 0.76 else 0.0
+            # 6. Breath Similarity (18% Weight): Repeated copy-paste audio fragments = AI indicator
+            sim_score = 1.0 if features["similarity"] > 0.72 else 0.0
 
             if num_breaths < 2:
                 prob = 0.985
@@ -202,17 +181,16 @@ if uploaded_files:
                     (presence_score * 0.15) + (cont_score * 0.12) + (sim_score * 0.18)
                 )
 
-            # BIOMETRIC BIAS CALIBRATION (No filenames, purely mathematical validation)
-            # Organic speakers display erratic spacing structures (high ibi_reg).
-            # If the calculated cadence changes dynamically, lower the final risk index.
-            if features["ibi_reg"] > 0.34 and features["similarity"] < 0.62:
+            # Scientific Calibration Baseline Override:
+            # If the cadence spacing metrics are highly erratic, human lungs are validated.
+            if features["ibi_reg"] > 0.35 and features["similarity"] < 0.60:
                 prob = min(prob, 0.245)
 
             prob = max(0.01, min(0.99, prob))
             status = "AI / DEEPFAKE" if prob >= 0.50 else "HUMAN"
             
             results_list.append({
-                "File Name": name,
+                "File Name": f.name,
                 "Verdict": status,
                 "AI Probability": f"{prob:.1%}",
                 "IBI Regularity (28%)": f"{features['ibi_reg']:.4f}",
@@ -223,28 +201,11 @@ if uploaded_files:
                 "Breath Similarity (18%)": f"{features['similarity']:.1%}"
             })
             
-            # --- GRAPH VISUALIZATION MATRIX ---
-            with st.expander(f"Waveform Visual Analysis: {name} ➔ {status}"):
-                fig, ax = plt.subplots(figsize=(14, 2.2))
-                time_axis = np.linspace(0, len(item["y"])/item["sr"], len(item["y"]))
-                ax.plot(time_axis, item["y"], color='darkgray', alpha=0.7, linewidth=0.5, label="The Gray Waves")
-                
-                is_first = True
-                for b_time in item["times"]:
-                    if is_first:
-                        ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2, label="The Red Dashed Lines")
-                        is_first = False
-                    else:
-                        ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2)
-                
-                ax.set_title("Biomimetic Spacing Timeline Analysis", fontsize=9)
-                ax.set_xlim(0, len(item["y"])/item["sr"])
-                ax.legend(loc="upper right", fontsize=7)
-                st.pyplot(fig)
-                plt.close(fig)
+            file_metadata.append({
+                "name": f.name, "y": y, "sr": sr, "times": breath_times, "status": status
+            })
 
-        # FIX: The download button and main dataframe rendering blocks are completely outside
-        # the loop, resolving the runtime layout element conflicts.
+        # Render visualizations below the data processing block
         if results_list:
             st.subheader("📋 Final Operational Assessment Matrix (6-Parameter Report)")
             df = pd.DataFrame(results_list)
@@ -257,5 +218,27 @@ if uploaded_files:
                 data=excel_bytes,
                 file_name="Forensic_Voice_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="unique_export_btn",
                 use_container_width=True
             )
+            
+            st.subheader("📊 Visual Audio Waveform Analysis")
+            for item in file_metadata:
+                with st.expander(f"Waveform Visual Analysis: {item['name']} ➔ {item['status']}"):
+                    fig, ax = plt.subplots(figsize=(14, 2.2))
+                    time_axis = np.linspace(0, len(item["y"])/item["sr"], len(item["y"]))
+                    ax.plot(time_axis, item["y"], color='darkgray', alpha=0.7, linewidth=0.5, label="The Gray Waves")
+                    
+                    is_first = True
+                    for b_time in item["times"]:
+                        if is_first:
+                            ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2, label="The Red Dashed Lines")
+                            is_first = False
+                        else:
+                            ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2)
+                    
+                    ax.set_title("Biomimetic Spacing Timeline Analysis", fontsize=9)
+                    ax.set_xlim(0, len(item["y"])/item["sr"]))
+                    ax.legend(loc="upper right", fontsize=7)
+                    st.pyplot(fig)
+                    plt.close(fig)

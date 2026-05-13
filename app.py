@@ -1,6 +1,6 @@
 import streamlit as st
 
-# 1. MUST BE THE ABSOLUTE FIRST LINE OF CODE TO PREVENT INITIALIZATION CRASHES
+# 1. MUST BE THE ABSOLUTE FIRST LINE OF CODE
 st.set_page_config(page_title="Deepfake Voice Detection", layout="wide")
 
 import numpy as np
@@ -9,16 +9,40 @@ import io
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
+from scipy.io import wavfile
 from scipy.stats import skew
 import gc
 
-@st.cache_data
-def load_audio(file_bytes):
+def load_audio_scipy(file_bytes):
     try:
-        y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, mono=True, duration=30)
+        # Direct Scipy loading bypasses librosa.load dependencies
+        sr, y = wavfile.read(io.BytesIO(file_bytes))
+        
+        # Convert stereo to mono if necessary
+        if len(y.shape) > 1:
+            y = np.mean(y, axis=1)
+            
+        # Convert integers to normalized float32
+        if y.dtype != np.float32:
+            y = y.astype(np.float32) / np.max(np.abs(y))
+            
+        # Resample to 22050Hz if mismatched
+        if sr != 22050:
+            y = librosa.resample(y, orig_sr=sr, target_sr=22050)
+            sr = 22050
+            
+        # Clip to first 30 seconds to conserve memory
+        if len(y) > sr * 30:
+            y = y[:sr * 30]
+            
         return y, sr
     except:
-        return None, None
+        # Fallback to standard librosa array conversion if wavfile fails
+        try:
+            y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, mono=True, duration=30)
+            return y, sr
+        except:
+            return None, None
 
 def forensic_analysis(y, sr, name):
     y_norm = librosa.util.normalize(y)
@@ -112,7 +136,7 @@ if uploaded_files:
     results_list = []
     for f in uploaded_files:
         f.seek(0)
-        y, sr = load_audio(f.read())
+        y, sr = load_audio_scipy(f.read())
         if y is not None:
             try:
                 metrics, b_times = forensic_analysis(y, sr, f.name)
@@ -136,5 +160,4 @@ if uploaded_files:
         df = pd.DataFrame(results_list)
         def color_status(v):
             return f'color: {"#ff4b4b" if "AI" in v else "#00f900"}; font-weight: bold'
-        # FIXED: Completed the broken dataframe mapping line safely
         st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)

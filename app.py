@@ -28,13 +28,15 @@ def apply_spectral_noise_subtraction(y, sr):
     noise_thresh = np.percentile(frame_energies, 15)
     noise_frames = stft_mag[:, frame_energies <= noise_thresh]
     
-    if noise_frames.shape > 0:
+    # FIX: Correctly check the array size integer instead of comparing a shape tuple
+    if noise_frames.size > 0:
         mean_noise_spectrum = np.mean(noise_frames, axis=1, keepdims=True)
     else:
         mean_noise_spectrum = np.median(stft_mag, axis=1, keepdims=True) * 0.1
         
-    # Apply Spectral Subtraction (Wiener-style soft thresholding)
-    subtracted_mag = np.maximum(stft_mag - (mean_noise_spectrum * 1.5), 0.0)
+    # Apply Spectral Subtraction with a soft flooring factor (0.02)
+    # This strips persistent hiss while preserving fragile human breathing acoustics
+    subtracted_mag = np.maximum(stft_mag - (mean_noise_spectrum * 1.3), stft_mag * 0.02)
     
     # Reconstruct the clean time-domain audio signal
     clean_stft = subtracted_mag * stft_phase
@@ -181,10 +183,11 @@ if uploaded_files:
                 prob = dist_to_human / total_distance_space if total_distance_space > 0 else 0.50
                 
                 # Apply balanced forensic constraints to separate classifications safely
-                status = "AI / DEEPFAKE" if prob >= 0.52 else "HUMAN"
+                status = "AI / DEEPFAKE" if prob >= 0.50 else "HUMAN"
                 
+                # Scientific Calibration Alignment Override:
                 # If timing cadence shows dynamic organic variations, pull risk levels down
-                if features["ibi_reg"] > 0.38 and features["similarity"] < 0.65:
+                if features["ibi_reg"] > 0.35 and features["similarity"] < 0.65:
                     prob = min(prob, 0.230)
                     status = "HUMAN"
 

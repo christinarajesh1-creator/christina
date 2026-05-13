@@ -19,7 +19,7 @@ def load_audio_scipy(file_bytes):
         if len(y.shape) > 1:
             y = np.mean(y, axis=1)
         if y.dtype != np.float32:
-            y = y.astype(np.float32) / np.max(np.abs(y))
+            y = y.astype(np.float32) / (np.max(np.abs(y)) + 1e-10)
         if sr != 22050:
             y = librosa.resample(y, orig_sr=sr, target_sr=22050)
             sr = 22050
@@ -106,7 +106,6 @@ def forensic_analysis(y, sr, name):
         "SFPA Asymmetry": round(sfpa_final, 6)
     }, breaths
 
-# --- UI LAYER ---
 st.title("🔬 Deepfake Voice Detection Engine")
 st.caption("Forensic Analysis Pipeline Based on Micro-Phase Acoustic Friction")
 
@@ -138,5 +137,4 @@ if uploaded_files:
 
     if results_list:
         df = pd.DataFrame(results_list)
-        # REMOVED .style.map ENTIRELY TO PREVENT THE FRAMEWORK INITIALIZATION CRASH
         st.dataframe(df, use_container_width=True)

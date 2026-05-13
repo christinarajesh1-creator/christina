@@ -15,29 +15,18 @@ import gc
 
 def load_audio_scipy(file_bytes):
     try:
-        # Direct Scipy loading bypasses librosa.load dependencies
         sr, y = wavfile.read(io.BytesIO(file_bytes))
-        
-        # Convert stereo to mono if necessary
         if len(y.shape) > 1:
             y = np.mean(y, axis=1)
-            
-        # Convert integers to normalized float32
         if y.dtype != np.float32:
             y = y.astype(np.float32) / np.max(np.abs(y))
-            
-        # Resample to 22050Hz if mismatched
         if sr != 22050:
             y = librosa.resample(y, orig_sr=sr, target_sr=22050)
             sr = 22050
-            
-        # Clip to first 30 seconds to conserve memory
         if len(y) > sr * 30:
             y = y[:sr * 30]
-            
         return y, sr
     except:
-        # Fallback to standard librosa array conversion if wavfile fails
         try:
             y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, mono=True, duration=30)
             return y, sr
@@ -62,39 +51,32 @@ def forensic_analysis(y, sr, name):
             "IBI Reg": 0.0, "Amp Var": 0.0, "Presence": "0%", "SFPA Asymmetry": 0.0
         }, []
 
-    # --- PARAMETER EXTRACTION ---
     ibi = np.diff(breaths)
     ibi_cv = np.std(ibi) / np.mean(ibi) if len(ibi) > 0 else 0
     amps = [rms_smooth[p] for p in peaks]
     amp_cv = np.std(amps) / np.mean(amps) if len(amps) > 0 else 0
     presence_ratio = (len(breaths) * 0.45) / duration
 
-    # --- ADVANCED FEATURE: SPECTRAL FLUX PHASE ASYMMETRY (SFPA) ---
     sfpa_metrics = []
     stft_matrix = librosa.stft(y_norm, n_fft=512, hop_length=hop)
     magnitude = np.abs(stft_matrix)
     
     total_rows, total_cols = magnitude.shape
-    
     hf_start_idx = int(total_rows * 0.75)
     hf_band = magnitude[hf_start_idx:, :]
-    
     hf_flux = np.diff(hf_band, axis=1)
     
     for b in breaths[:5]:
         frame_idx = int((b * sr) / hop)
         start_frame = max(0, frame_idx - 5)
         end_frame = min(total_cols - 1, frame_idx + 15)
-        
         frame_slice = hf_flux[:, start_frame:end_frame]
         if frame_slice.size > 0:
             sfpa_metrics.append(skew(frame_slice.flatten()))
 
     sfpa_final = np.mean(np.abs(sfpa_metrics)) if len(sfpa_metrics) > 0 else 0.0
 
-    # --- CLASSIFICATION LOGIC ---
     ai_weight = 10.0
-    
     if sfpa_final < 1.85:
         ai_weight += 45.0
     elif sfpa_final < 1.98:
@@ -102,14 +84,12 @@ def forensic_analysis(y, sr, name):
         
     if 0.16 < ibi_cv < 0.31:
         ai_weight += 20.0
-    
     if presence_ratio > 0.26:
         ai_weight += 15.0
     if amp_cv < 0.19:
         ai_weight += 10.0
 
     final_prob = min(99, int((ai_weight / 100.0) * 100))
-    
     if ibi_cv > 0.32 and sfpa_final > 2.10:
         status = "HUMAN"
         final_prob = min(25, final_prob)
@@ -158,6 +138,5 @@ if uploaded_files:
 
     if results_list:
         df = pd.DataFrame(results_list)
-        def color_status(v):
-            return f'color: {"#ff4b4b" if "AI" in v else "#00f900"}; font-weight: bold'
-        st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)
+        # REMOVED .style.map ENTIRELY TO PREVENT THE FRAMEWORK INITIALIZATION CRASH
+        st.dataframe(df, use_container_width=True)

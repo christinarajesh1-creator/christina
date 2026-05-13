@@ -11,9 +11,6 @@ import io
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
-from sklearn.ensemble import GradientBoostingClassifier
-import joblib
-import os
 
 # ==========================================
 # 2. SCIENTIFIC BREATH FEATURE EXTRACTION
@@ -65,9 +62,8 @@ def extract_6_breath_parameters(y, sr):
     raw_metrics["amp_var"] = float(np.std(amp_values) / np.mean(amp_values)) if len(amp_values) > 0 else 0.0
 
     # 3. Breath Duration (Standard Deviation of pulse peak width mappings)
-    # FIX: Explicitly target index [0] to extract the width array before multiplying
-    widths_data = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)
-    widths_seconds = widths_data[0] * (hop_length / sr)
+    widths_data = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)[0]
+    widths_seconds = widths_data * (hop_length / sr)
     raw_metrics["dur_var"] = float(np.std(widths_seconds)) if len(widths_seconds) > 0 else 0.0
 
     # 4. Breath Presence (Ratio of breath frames relative to total timeline duration)
@@ -101,65 +97,75 @@ def extract_6_breath_parameters(y, sr):
     return raw_metrics, breath_times
 
 # ==========================================
-# 3. DYNAMICALLY RE-CALIBRATED ML MODEL
+# 3. DETERMINISTIC EVALUATION SCORING ENGINE
 # ==========================================
-@st.cache_resource
-def load_calibrated_classifier():
+def calculate_forensic_verdict(raw_features, num_breaths):
     """
-    Instantiates a dynamically scaling machine learning classifier calibrated 
-    to match the real operational bounds of synthetic and human recordings.
+    Evaluates acoustic profiles using a rule-based scoring mechanism mapped 
+    directly to your exact forensic parameter weight definitions.
     """
-    model_filename = "calibrated_breath_ml_model.pkl"
-    feature_names = ["ibi_reg", "amp_var", "dur_var", "presence", "spectral_cont", "similarity"]
-    
-    np.random.seed(42)
-    num_training_samples = 600
-    X_train, y_train = [], []
-    
-    for _ in range(num_training_samples // 2):
-        # Human Voice Distribution Profiles
-        X_train.append([
-            np.random.uniform(0.35, 0.75),  # ibi_reg (Highly dynamic natural spacing)
-            np.random.uniform(0.15, 0.65),  # amp_var (Fluctuating organic volume signatures)
-            np.random.uniform(0.15, 0.55),  # dur_var (Mixed long gasps and short adjustments)
-            np.random.uniform(0.05, 0.22),  # presence (Natural 5% to 22% breath footprint density)
-            np.random.uniform(0.10, 0.45),  # spectral_cont
-            np.random.uniform(0.10, 0.50)   # similarity (Unique acoustic inhalations every step)
-        ])
-        y_train.append(0) # Index 0 = Human 
-        
-        # AI/Deepfake Distribution Profiles (Tuned directly to match your audio data footprint)
-        X_train.append([
-            np.random.uniform(0.18, 0.31),  # ibi_reg (Matches your compressed uniform spacing logs)
-            np.random.uniform(0.75, 1.10),  # amp_var (Matches your unnaturally high volume consistency logs)
-            np.random.uniform(0.10, 0.40),  # dur_var
-            np.random.uniform(0.28, 0.60),  # presence (Matches your massive 30.4% - 56.6% cloned breath fills)
-            np.random.uniform(0.01, 0.08),  # spectral_cont
-            np.random.uniform(0.70, 0.99)   # similarity (Highly repetitive copy-paste sound patterns)
-        ])
-        y_train.append(1) # Index 1 = AI / Deepfake
+    # Safeguard: Complete lack of organic breath indicators strictly implies synthesis
+    if num_breaths < 2:
+        return 0.985, "AI / DEEPFAKE"
 
-    # Train a tightly fitted boosting classifier to instantly isolate your target patterns
-    clf = GradientBoostingClassifier(
-        n_estimators=250, 
-        learning_rate=0.08, 
-        max_depth=5, 
-        random_state=42
+    # 1. IBI Regularity (28% Weight): Humans show higher variation (> 0.35)
+    # If regularity variation metric drops below 0.32, timing is unnaturally mechanical
+    if raw_features["ibi_reg"] < 0.33:
+        ibi_score = 1.0
+    else:
+        ibi_score = max(0.0, 1.0 - (raw_features["ibi_reg"] - 0.33) / 0.4)
+
+    # 2. Breath Amplitude (15% Weight): Synthetics maintain flat uniform volume (< 0.20)
+    if raw_features["amp_var"] < 0.20:
+        amp_score = 1.0
+    else:
+        amp_score = max(0.0, 1.0 - (raw_features["amp_var"] - 0.20) / 0.5)
+
+    # 3. Breath Duration (12% Weight): AI creates highly cloned lengths (< 0.05)
+    if raw_features["dur_var"] < 0.06:
+        dur_score = 1.0
+    else:
+        dur_score = max(0.0, 1.0 - (raw_features["dur_var"] - 0.06) / 0.3)
+
+    # 4. Breath Presence (15% Weight): Abnormally bloated density over 25% represents AI artifacting
+    if raw_features["presence"] > 0.26 or raw_features["presence"] < 0.04:
+        presence_score = 1.0
+    else:
+        presence_score = 0.0
+
+    # 5. Spectral Continuity (12% Weight): Low values match clean synthetic generation drops
+    if raw_features["spectral_cont"] < 0.08:
+        cont_score = 1.0
+    else:
+        cont_score = max(0.0, 1.0 - (raw_features["spectral_cont"] - 0.08) / 0.2)
+
+    # 6. Breath Similarity (18% Weight): AI systems copy-paste exact identical inhalations (> 75%)
+    if raw_features["similarity"] > 0.72:
+        sim_score = 1.0
+    else:
+        sim_score = max(0.0, raw_features["similarity"] / 0.72)
+
+    # Aggregate weighted probability layout
+    ai_probability = (
+        (ibi_score * 0.28) +
+        (amp_score * 0.15) +
+        (dur_score * 0.12) +
+        (presence_score * 0.15) +
+        (cont_score * 0.12) +
+        (sim_score * 0.18)
     )
-    clf.fit(X_train, y_train)
-    clf.feature_names_in_ = np.array(feature_names)
+
+    # Smooth clipping and final structural classification logic
+    ai_probability = max(0.01, min(0.99, ai_probability))
+    status = "AI / DEEPFAKE" if ai_probability >= 0.50 else "HUMAN"
     
-    joblib.dump(clf, model_filename)
-    return clf
+    return ai_probability, status
 
 # ==========================================
 # 4. STREAMLIT INTERFACE & VISUALIZATION
 # ==========================================
 st.title("🔬 Deepfake Voice Detection Engine")
-st.caption("Forensic Analysis Pipeline Powered by Calibrated Breath-Anomaly Machine Learning Classifier")
-
-# Initialize the ML Model with the corrected data arrays
-ml_classifier = load_calibrated_classifier()
+st.caption("Forensic Analysis Pipeline Mapped to Biomimetic Breath-Anomaly Parameters")
 
 uploaded_files = st.file_uploader("Upload Forensic Audio Batch", type=['wav', 'mp3', 'flac'], accept_multiple_files=True)
 
@@ -176,22 +182,11 @@ if uploaded_files:
             
         if y is not None and len(y) > 0:
             try:
-                # 1. Run signal processing layer to extract the 6 parameters
+                # 1. Run signal processing layer to extract parameters
                 raw_features, breath_times = extract_6_breath_parameters(y, sr)
                 
-                # 2. Extract an ordered feature vector matching the model input
-                feature_vector = [raw_features[k] for k in ml_classifier.feature_names_in_]
-                
-                # 3. Calculate calibrated probabilities via Machine Learning
-                prob_matrix = ml_classifier.predict_proba([feature_vector])
-                ai_probability = float(prob_matrix[0][1]) # Target Index 1 specifically for AI class
-                
-                # 4. Zero-Breath Override Safeguard
-                if len(breath_times) == 0:
-                    ai_probability = max(ai_probability, 0.992)
-                
-                # 5. Resolve final operational verdict boundary
-                status = "AI / DEEPFAKE" if ai_probability >= 0.50 else "HUMAN"
+                # 2. Run deterministic forensic weight metrics logic
+                ai_probability, status = calculate_forensic_verdict(raw_features, len(breath_times))
                 
                 # Map directly to your 6 specific reporting fields
                 results_list.append({
@@ -240,4 +235,3 @@ if uploaded_files:
         st.subheader("📋 Final Operational Assessment Matrix (6-Parameter Report)")
         df = pd.DataFrame(results_list)
         st.dataframe(df, use_container_width=True)
-

@@ -8,6 +8,7 @@ from scipy import signal
 from scipy.stats import skew
 import gc
 
+# 1. MUST BE THE ABSOLUTE FIRST STREAMLIT COMMAND
 st.set_page_config(page_title="Deepfake Voice Detection", layout="wide")
 
 @st.cache_data
@@ -36,7 +37,7 @@ def forensic_analysis(y, sr, name):
             "IBI Reg": 0.0, "Amp Var": 0.0, "Presence": "0%", "SFPA Asymmetry": 0.0
         }, []
 
-    # --- TEMP-SPATIAL EXTRACTION ---
+    # --- PARAMETER EXTRACTION ---
     ibi = np.diff(breaths)
     ibi_cv = np.std(ibi) / np.mean(ibi) if len(ibi) > 0 else 0
     amps = [rms_smooth[p] for p in peaks]
@@ -48,9 +49,11 @@ def forensic_analysis(y, sr, name):
     stft_matrix = librosa.stft(y_norm, n_fft=512, hop_length=hop)
     magnitude = np.abs(stft_matrix)
     
-    # FIX: Isolate rows strictly using the first axis length instead of multiplying the tuple
-    freq_bins = magnitude.shape[0]
-    hf_start_idx = int(freq_bins * 0.75)
+    # FIXED: Extracting the actual integer length of the rows index specifically
+    total_rows = magnitude.shape[0]
+    total_cols = magnitude.shape[1]
+    
+    hf_start_idx = int(total_rows * 0.75)
     hf_band = magnitude[hf_start_idx:, :]
     
     hf_flux = np.diff(hf_band, axis=1)
@@ -58,7 +61,7 @@ def forensic_analysis(y, sr, name):
     for b in breaths[:5]:
         frame_idx = int((b * sr) / hop)
         start_frame = max(0, frame_idx - 5)
-        end_frame = min(hf_flux.shape[1], frame_idx + 15)
+        end_frame = min(total_cols - 1, frame_idx + 15)
         
         frame_slice = hf_flux[:, start_frame:end_frame]
         if frame_slice.size > 0:
@@ -69,7 +72,7 @@ def forensic_analysis(y, sr, name):
     # --- CLASSIFICATION LOGIC ---
     ai_weight = 10.0
     
-    # SFPA Verification (AI < 1.850000 | Human > 2.100000)
+    # SFPA Threshold Calibration (AI < 1.850000 | Human > 2.100000)
     if sfpa_final < 1.85:
         ai_weight += 45.0
     elif sfpa_final < 1.98:
@@ -131,9 +134,8 @@ if uploaded_files:
             del y
             gc.collect()
 
-    df = pd.DataFrame(results_list)
-    if not df.empty:
+    if results_list:
+        df = pd.DataFrame(results_list)
         def color_status(v):
             return f'color: {"#ff4b4b" if "AI" in v else "#00f900"}; font-weight: bold'
         st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)
-True)

@@ -13,41 +13,49 @@ import matplotlib.pyplot as plt
 from scipy import signal
 
 # ==========================================
-# 2. SCIENTIFIC BREATH FEATURE EXTRACTION
+# 2. ROBUST FORENSIC BREATH FEATURE ENGINE
 # ==========================================
 def extract_6_breath_parameters(y, sr):
     """
-    Extracts the exact 6 biometric and acoustic breath parameters.
-    Returns raw statistical vectors directly corresponding to audio properties.
+    Extracts the exact 6 biometric breath parameters.
+    Implements an adaptive energy gate to ignore background room hiss.
     """
     y_norm = librosa.util.normalize(y)
     duration = len(y_norm) / sr
     
-    # Track the raw volume envelope using Root-Mean-Square (RMS) Energy
+    # Track the voice volume envelope using Root-Mean-Square (RMS) Energy
     hop_length = 128  
     rms = librosa.feature.rms(y=y_norm, hop_length=hop_length).flatten()
     rms_smooth = np.convolve(rms, np.ones(5)/5, mode='same')
     
-    # Locate inhalation valleys (low-energy, friction-heavy speech gaps)
+    # --- ADAPTIVE NOISE GATE OVERRIDE ---
+    # Captures the noise floor of the bottom 15% lowest frames of your audio file
+    noise_floor = np.percentile(rms_smooth, 15)
+    speech_peak_max = np.max(rms_smooth)
+    
+    # Adaptive threshold: Look for real physical gaps, ignoring continuous static noise
+    adaptive_height = noise_floor + (speech_peak_max - noise_floor) * 0.12
+    
+    # Locate inhalation valleys using the custom file threshold
     peaks, _ = signal.find_peaks(
         -rms_smooth, 
-        height=-np.median(rms_smooth)*0.85, 
-        distance=int(sr * 0.4 / hop_length)
+        height=-adaptive_height, 
+        distance=int(sr * 0.35 / hop_length) # Real breaths occur at least 350ms apart
     )
     
-    # Filter edge artifacts from the start/end boundaries of the audio file
+    # Filter edge artifacts from the start/end boundaries of the clip
     detected_times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
-    breath_times = [t for t in detected_times if 0.3 < t < (duration - 0.3)]
+    breath_times = [t for t in detected_times if 0.4 < t < (duration - 0.4)]
     num_breaths = len(breath_times)
 
-    # Base dictionary mapping the exact 6 requested parameters
+    # Dictionary mapping your exact 6 requested parameters
     raw_metrics = {
-        "ibi_reg": 0.0,       # 1. IBI Regularity
-        "amp_var": 0.0,       # 2. Breath Amplitude
-        "dur_var": 0.0,       # 3. Breath Duration
-        "presence": 0.0,      # 4. Breath Presence
-        "spectral_cont": 0.0, # 5. Spectral Continuity
-        "similarity": 0.0     # 6. Breath Similarity
+        "ibi_reg": 0.0,       
+        "amp_var": 0.0,       
+        "dur_var": 0.0,       
+        "presence": 0.0,      
+        "spectral_cont": 0.0, 
+        "similarity": 0.0     
     }
 
     if num_breaths < 2:
@@ -58,12 +66,12 @@ def extract_6_breath_parameters(y, sr):
     raw_metrics["ibi_reg"] = float(np.std(ibi) / np.mean(ibi)) if len(ibi) > 0 else 0.0
 
     # 2. Breath Amplitude (Coefficient of Variation of peak RMS power)
-    amp_values = [rms_smooth[p] for p in peaks]
+    amp_values = [rms_smooth[p] for p in peaks if p < len(rms_smooth)]
     raw_metrics["amp_var"] = float(np.std(amp_values) / np.mean(amp_values)) if len(amp_values) > 0 else 0.0
 
     # 3. Breath Duration (Standard Deviation of pulse peak width mappings)
-    widths_data = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)[0]
-    widths_seconds = widths_data * (hop_length / sr)
+    widths_data = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)
+    widths_seconds = widths_data[0] * (hop_length / sr) if len(widths_data) > 0 else np.array([0.0])
     raw_metrics["dur_var"] = float(np.std(widths_seconds)) if len(widths_seconds) > 0 else 0.0
 
     # 4. Breath Presence (Ratio of breath frames relative to total timeline duration)
@@ -81,7 +89,7 @@ def extract_6_breath_parameters(y, sr):
     # 6. Breath Similarity (Cross-correlation matrix of MFCC profiles across segments)
     breath_mfccs = []
     for t in breath_times:
-        start_sample, end_sample = int((t - 0.15) * sr), int((t + 0.15) * sr)
+        start_sample, end_sample = int((t - 0.12) * sr), int((t + 0.12) * sr)
         segment = y_norm[max(0, start_sample):min(len(y_norm), end_sample)]
         if len(segment) > 128:
             mfcc = librosa.feature.mfcc(y=segment, sr=sr, n_mfcc=6)
@@ -97,55 +105,42 @@ def extract_6_breath_parameters(y, sr):
     return raw_metrics, breath_times
 
 # ==========================================
-# 3. DETERMINISTIC EVALUATION SCORING ENGINE
+# 3. HIGH-ACCURACY SCORING LOGIC
 # ==========================================
 def calculate_forensic_verdict(raw_features, num_breaths):
     """
-    Evaluates acoustic profiles using a rule-based scoring mechanism mapped 
-    directly to your exact forensic parameter weight definitions.
+    Computes an objective AI Probability based on physiological boundaries.
     """
-    # Safeguard: Complete lack of organic breath indicators strictly implies synthesis
     if num_breaths < 2:
-        return 0.985, "AI / DEEPFAKE"
+        return 0.950, "AI / DEEPFAKE"
 
-    # 1. IBI Regularity (28% Weight): Humans show higher variation (> 0.35)
-    # If regularity variation metric drops below 0.32, timing is unnaturally mechanical
-    if raw_features["ibi_reg"] < 0.33:
+    # Score component 1: Timing regularity
+    if raw_features["ibi_reg"] < 0.20: # Unnaturally perfect mechanical grid spacing
         ibi_score = 1.0
+    elif raw_features["ibi_reg"] > 0.40: # Dynamic natural human speech pattern variations
+        ibi_score = 0.0
     else:
-        ibi_score = max(0.0, 1.0 - (raw_features["ibi_reg"] - 0.33) / 0.4)
+        ibi_score = 0.5
 
-    # 2. Breath Amplitude (15% Weight): Synthetics maintain flat uniform volume (< 0.20)
-    if raw_features["amp_var"] < 0.20:
-        amp_score = 1.0
-    else:
-        amp_score = max(0.0, 1.0 - (raw_features["amp_var"] - 0.20) / 0.5)
+    # Score component 2: Volume changes
+    amp_score = 1.0 if raw_features["amp_var"] < 0.15 else 0.0
 
-    # 3. Breath Duration (12% Weight): AI creates highly cloned lengths (< 0.05)
-    if raw_features["dur_var"] < 0.06:
-        dur_score = 1.0
-    else:
-        dur_score = max(0.0, 1.0 - (raw_features["dur_var"] - 0.06) / 0.3)
+    # Score component 3: Uniform length clones
+    dur_score = 1.0 if raw_features["dur_var"] < 0.05 else 0.0
 
-    # 4. Breath Presence (15% Weight): Abnormally bloated density over 25% represents AI artifacting
-    if raw_features["presence"] > 0.26 or raw_features["presence"] < 0.04:
+    # Score component 4: Density footprint check
+    if raw_features["presence"] > 0.28 or raw_features["presence"] < 0.02:
         presence_score = 1.0
     else:
         presence_score = 0.0
 
-    # 5. Spectral Continuity (12% Weight): Low values match clean synthetic generation drops
-    if raw_features["spectral_cont"] < 0.08:
-        cont_score = 1.0
-    else:
-        cont_score = max(0.0, 1.0 - (raw_features["spectral_cont"] - 0.08) / 0.2)
+    # Score component 5: Computational spectral discontinuities
+    cont_score = 1.0 if raw_features["spectral_cont"] < 0.05 else 0.0
 
-    # 6. Breath Similarity (18% Weight): AI systems copy-paste exact identical inhalations (> 75%)
-    if raw_features["similarity"] > 0.72:
-        sim_score = 1.0
-    else:
-        sim_score = max(0.0, raw_features["similarity"] / 0.72)
+    # Score component 6: Reused voice generation assets
+    sim_score = 1.0 if raw_features["similarity"] > 0.82 else 0.0
 
-    # Aggregate weighted probability layout
+    # Calculate absolute probability distribution based on requested weights
     ai_probability = (
         (ibi_score * 0.28) +
         (amp_score * 0.15) +
@@ -155,14 +150,13 @@ def calculate_forensic_verdict(raw_features, num_breaths):
         (sim_score * 0.18)
     )
 
-    # Smooth clipping and final structural classification logic
     ai_probability = max(0.01, min(0.99, ai_probability))
     status = "AI / DEEPFAKE" if ai_probability >= 0.50 else "HUMAN"
     
     return ai_probability, status
 
 # ==========================================
-# 4. STREAMLIT INTERFACE & VISUALIZATION
+# 4. STREAMLIT INTERFACE & RUNTIME
 # ==========================================
 st.title("🔬 Deepfake Voice Detection Engine")
 st.caption("Forensic Analysis Pipeline Mapped to Biomimetic Breath-Anomaly Parameters")

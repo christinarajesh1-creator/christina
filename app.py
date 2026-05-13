@@ -28,7 +28,7 @@ def apply_spectral_noise_subtraction(y, sr):
     noise_thresh = np.percentile(frame_energies, 15)
     noise_frames = stft_mag[:, frame_energies <= noise_thresh]
     
-    if noise_frames.shape[0] > 0:
+    if noise_frames.shape[1] > 0:
         mean_noise_spectrum = np.mean(noise_frames, axis=1, keepdims=True)
     else:
         mean_noise_spectrum = np.median(stft_mag, axis=1, keepdims=True) * 0.1
@@ -205,40 +205,40 @@ if uploaded_files:
                 "name": f.name, "y": y, "sr": sr, "times": breath_times, "status": status
             })
 
-        # Render visualizations below the data processing block
-        if results_list:
-            st.subheader("📋 Final Operational Assessment Matrix (6-Parameter Report)")
-            df = pd.DataFrame(results_list)
-            st.dataframe(df, use_container_width=True)
-            
-            st.write("---")
-            excel_bytes = convert_df_to_excel(df)
-            st.download_button(
-                label="📥 Export Forensic Excel Report",
-                data=excel_bytes,
-                file_name="Forensic_Voice_Report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="unique_export_btn",
-                use_container_width=True
-            )
-            
-            st.subheader("📊 Visual Audio Waveform Analysis")
-            for item in file_metadata:
-                with st.expander(f"Waveform Visual Analysis: {item['name']} ➔ {item['status']}"):
-                    fig, ax = plt.subplots(figsize=(14, 2.2))
-                    time_axis = np.linspace(0, len(item["y"])/item["sr"], len(item["y"]))
-                    ax.plot(time_axis, item["y"], color='darkgray', alpha=0.7, linewidth=0.5, label="The Gray Waves")
-                    
-                    is_first = True
-                    for b_time in item["times"]:
-                        if is_first:
-                            ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2, label="The Red Dashed Lines")
-                            is_first = False
-                        else:
-                            ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2)
-                    
-                    ax.set_title("Biomimetic Spacing Timeline Analysis", fontsize=9)
-                    ax.set_xlim(0, len(item["y"])/item["sr"]))
-                    ax.legend(loc="upper right", fontsize=7)
-                    st.pyplot(fig)
-                    plt.close(fig)
+    # Render visualizations below the data processing block
+    if results_list:
+        st.subheader("📋 Final Operational Assessment Matrix (6-Parameter Report)")
+        df = pd.DataFrame(results_list)
+        st.dataframe(df, use_container_width=True)
+        
+        st.write("---")
+        excel_bytes = convert_df_to_excel(df)
+        st.download_button(
+            label="📥 Export Forensic Excel Report",
+            data=excel_bytes,
+            file_name="Forensic_Voice_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="unique_export_btn",
+            use_container_width=True
+        )
+        
+        st.subheader("📊 Visual Audio Waveform Analysis")
+        for item in file_metadata:
+            with st.expander(f"Waveform Visual Analysis: {item['name']} ➔ {item['status']}"):
+                fig, ax = plt.subplots(figsize=(14, 2.2))
+                time_axis = np.linspace(0, len(item["y"])/item["sr"], len(item["y"]))
+                ax.plot(time_axis, item["y"], color='darkgray', alpha=0.7, linewidth=0.5, label="The Gray Waves")
+                
+                is_first = True
+                for b_time in item["times"]:
+                    if is_first:
+                        ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2, label="The Red Dashed Lines")
+                        is_first = False
+                    else:
+                        ax.axvline(x=b_time, color='red', linestyle='--', linewidth=1.2)
+                
+                ax.set_title("Biomimetic Spacing Timeline Analysis", fontsize=9)
+                ax.set_xlim(0, len(item["y"])/item["sr"]) # FIXED: Removed stray trailing parenthesis
+                ax.legend(loc="upper right", fontsize=7)
+                st.pyplot(fig)
+                plt.close(fig)

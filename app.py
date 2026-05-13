@@ -65,8 +65,9 @@ def extract_6_breath_parameters(y, sr):
     raw_metrics["amp_var"] = float(np.std(amp_values) / np.mean(amp_values)) if len(amp_values) > 0 else 0.0
 
     # 3. Breath Duration (Standard Deviation of pulse peak width mappings)
-    widths = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)
-    widths_seconds = widths * (hop_length / sr)
+    # FIX: Explicitly target index [0] to extract the width array before multiplying
+    widths_data = signal.peak_widths(-rms_smooth, peaks, rel_height=0.5)
+    widths_seconds = widths_data[0] * (hop_length / sr)
     raw_metrics["dur_var"] = float(np.std(widths_seconds)) if len(widths_seconds) > 0 else 0.0
 
     # 4. Breath Presence (Ratio of breath frames relative to total timeline duration)
@@ -111,7 +112,6 @@ def load_calibrated_classifier():
     model_filename = "calibrated_breath_ml_model.pkl"
     feature_names = ["ibi_reg", "amp_var", "dur_var", "presence", "spectral_cont", "similarity"]
     
-    # We remove old cached state checks to force retraining with the new targets
     np.random.seed(42)
     num_training_samples = 600
     X_train, y_train = [], []

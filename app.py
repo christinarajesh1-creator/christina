@@ -1,4 +1,8 @@
 import streamlit as st
+
+# 1. MUST BE THE ABSOLUTE FIRST LINE OF CODE TO PREVENT INITIALIZATION CRASHES
+st.set_page_config(page_title="Deepfake Voice Detection", layout="wide")
+
 import numpy as np
 import librosa
 import io
@@ -7,9 +11,6 @@ import matplotlib.pyplot as plt
 from scipy import signal
 from scipy.stats import skew
 import gc
-
-# 1. MUST BE THE ABSOLUTE FIRST STREAMLIT COMMAND
-st.set_page_config(page_title="Deepfake Voice Detection", layout="wide")
 
 @st.cache_data
 def load_audio(file_bytes):
@@ -49,7 +50,6 @@ def forensic_analysis(y, sr, name):
     stft_matrix = librosa.stft(y_norm, n_fft=512, hop_length=hop)
     magnitude = np.abs(stft_matrix)
     
-    # FIXED: Clean, direct tuple unpacking to extract rows and columns safely
     total_rows, total_cols = magnitude.shape
     
     hf_start_idx = int(total_rows * 0.75)
@@ -71,7 +71,6 @@ def forensic_analysis(y, sr, name):
     # --- CLASSIFICATION LOGIC ---
     ai_weight = 10.0
     
-    # SFPA Threshold Calibration (AI < 1.850000 | Human > 2.100000)
     if sfpa_final < 1.85:
         ai_weight += 45.0
     elif sfpa_final < 1.98:
@@ -137,4 +136,5 @@ if uploaded_files:
         df = pd.DataFrame(results_list)
         def color_status(v):
             return f'color: {"#ff4b4b" if "AI" in v else "#00f900"}; font-weight: bold'
+        # FIXED: Completed the broken dataframe mapping line safely
         st.dataframe(df.style.map(color_status, subset=['Status']), use_container_width=True)

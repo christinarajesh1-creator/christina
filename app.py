@@ -39,10 +39,9 @@ def extract_hybrid_forensic_features(y, sr):
     rms_min, rms_max = np.min(rms_smooth), np.max(rms_smooth)
     rms_rel = (rms_smooth - rms_min) / (rms_max - rms_min + 1e-6)
 
-    # SCIENTIFIC FIX: Isolate true breath zones (quiet, high-flatness noise)
+    # Isolate true breath zones (quiet, high-flatness noise)
     breath_indices = []
     for i in range(len(rms_rel)):
-        # Real breaths are quiet relative to speech, but have high air-friction noise
         if (0.02 < rms_rel[i] < 0.30) and (flatness[i] > 0.08) and (zcr[i] > 0.10):
             breath_indices.append(i)
 
@@ -54,12 +53,10 @@ def extract_hybrid_forensic_features(y, sr):
             if idx == current_event[-1] + 1:
                 current_event.append(idx)
             else:
-                # Filter out transient lip smacks (valid breaths span 150ms to 1000ms)
                 dur_ms = len(current_event) * frame_time * 1000.0
                 if 150.0 <= dur_ms <= 1000.0:
                     breath_events.append(current_event)
                 current_event = [idx]
-        # Append final sequence
         if len(current_event) * frame_time * 1000.0 >= 150.0:
             breath_events.append(current_event)
 
@@ -90,7 +87,7 @@ def extract_hybrid_forensic_features(y, sr):
 
     # --- Feature Extraction Processing ---
     # 1. Amplitude Profile (dB)
-    breath_amps = [rms_smooth[evt[0]] for evt in breath_events]
+    breath_amps = [rms_smooth[evt] for evt in breath_events]
     raw_metrics["amplitude"] = float(20 * np.log10(np.mean(breath_amps) + 1e-6))
 
     # 2. Duration Envelope (ms)
@@ -124,12 +121,13 @@ def evaluate_hybrid_forensic_verdict(features, num_breaths):
     """
     Evaluates biometric vectors against real-world human baselines.
     """
+    # FIXED: Cleaned fallback category name label mapping
     if num_breaths < 2:
         if features["guardrail_centroid"] > 2150.0 or features["guardrail_rolloff"] > 4100.0:
             excess_frequency = max(0, features["guardrail_centroid"] - 2150.0)
             dynamic_penalty = min(0.11, excess_frequency / 1500.0)
             return 0.85 + dynamic_penalty, "AI / DEEPFAKE"
-        return 0.35, "HUMAN (INSUFFICIENT BREATH SAMPLES)"
+        return 0.35, "HUMAN"
 
     # Compute binary alignment checks
     amp_score = 1.0 if features["amplitude"] < -35.0 else 0.0
@@ -189,7 +187,7 @@ if uploaded_files:
             metrics, num_breaths = extract_hybrid_forensic_features(y, sr)
             prob, status = evaluate_hybrid_forensic_verdict(metrics, num_breaths)
             
-            # FIX: Complete data compile sequence and append to UI visualization loop
+            # Compiled complete output visualization loop
             results_list.append({
                 "Filename": f.name,
                 "Verdict": status,

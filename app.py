@@ -4,7 +4,7 @@ import librosa
 import io
 import pandas as pd
 
-# Secure the Excel exporter dependency
+# Secure the Excel exporter dependency safely
 try:
     import xlsxwriter
 except ImportError:
@@ -86,9 +86,10 @@ def extract_hybrid_forensic_features(y, sr):
         return raw_metrics, num_breaths
 
     # --- Feature Extraction Processing ---
-    # 1. Amplitude Profile (dB)
-    breath_amps = [rms_smooth[evt] for evt in breath_events]
-    raw_metrics["amplitude"] = float(20 * np.log10(np.mean(breath_amps) + 1e-6))
+    
+    # 1. Amplitude Profile (dB) - FIXED: Flatten multi-dimensional array chunks safely
+    all_breath_amplitudes = [amp_val for evt in breath_events for amp_val in rms_smooth[evt]]
+    raw_metrics["amplitude"] = float(20 * np.log10(np.mean(all_breath_amplitudes) + 1e-6))
 
     # 2. Duration Envelope (ms)
     durations = [len(evt) * frame_time * 1000.0 for evt in breath_events]
@@ -121,7 +122,6 @@ def evaluate_hybrid_forensic_verdict(features, num_breaths):
     """
     Evaluates biometric vectors against real-world human baselines.
     """
-    # FIXED: Cleaned fallback category name label mapping
     if num_breaths < 2:
         if features["guardrail_centroid"] > 2150.0 or features["guardrail_rolloff"] > 4100.0:
             excess_frequency = max(0, features["guardrail_centroid"] - 2150.0)
@@ -187,7 +187,7 @@ if uploaded_files:
             metrics, num_breaths = extract_hybrid_forensic_features(y, sr)
             prob, status = evaluate_hybrid_forensic_verdict(metrics, num_breaths)
             
-            # Compiled complete output visualization loop
+            # Appends metrics inside processing table safely
             results_list.append({
                 "Filename": f.name,
                 "Verdict": status,
